@@ -18,9 +18,8 @@ from datetime import datetime
 from bs4 import BeautifulSoup
 from playwright.async_api import async_playwright
 
-from playwright_stealth import Stealth, ALL_EVASIONS_DISABLED_KWARGS
+from playwright_stealth import Stealth
 
-import sys
 IN_COLAB = 'google.colab' in sys.modules
 
 try:

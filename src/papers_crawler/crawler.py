@@ -11,13 +11,13 @@ import os
 import time
 import logging
 from typing import List, Optional, Tuple
-from urllib.parse import urljoin
+from urllib.parse import urlencode
 
 from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
 
 logger = logging.getLogger(__name__)
-from playwright_stealth import Stealth, ALL_EVASIONS_DISABLED_KWARGS
+from playwright_stealth import Stealth
 logging.basicConfig(level=logging.INFO)
 
 
@@ -106,8 +106,6 @@ def crawl(
     Returns:
         Tuple[List[str], List[str]]: (downloaded_file_paths, open_access_article_names)
     """
-    import time
-
     os.makedirs(out_folder, exist_ok=True)
     downloaded_files = []
     open_access_articles = []
@@ -376,7 +374,7 @@ def crawl(
                 "startPage": "0",
                 "pageSize": "100",
             }
-            query = "&".join(f"{k}={v}" for k, v in params.items())
+            query = urlencode(params)
             url = f"{search_url}?{query}"
             logger.info(f"Searching: {url}")
             page.goto(url)
@@ -586,17 +584,15 @@ def discover_journals(force_refresh: bool = False) -> List[Tuple[str, str]]:
                 match = re.match(r'^/([a-z0-9\-]+)/home$', href)
                 if match:
                     slug = match.group(1)
-                
-                # Pattern 2: Multi-level with /home (e.g., /molecular-therapy-family/methods/home)
-                elif re.match(r'^/([a-z0-9\-]+/[a-z0-9\-]+)/home$', href):
+                else:
+                    # Pattern 2: Multi-level with /home (e.g., /molecular-therapy-family/methods/home)
                     match = re.match(r'^/([a-z0-9\-]+/[a-z0-9\-]+)/home$', href)
                     if match:
                         slug = match.group(1)
-                
-                # Pattern 3: Journal links WITHOUT /home (e.g., /cell-chemical-biology)
-                # These are still valid, the actual URL has /home added
-                elif re.match(r'^/([a-z0-9\-]+)$', href):
-                    slug = href.strip('/')
+                    # Pattern 3: Journal links WITHOUT /home (e.g., /cell-chemical-biology)
+                    # These are still valid, the actual URL has /home added
+                    elif re.match(r'^/([a-z0-9\-]+)$', href):
+                        slug = href.strip('/')
                 
                 if slug:
                     # Clean up text (remove "(partner)" suffixes, "partner", and extra whitespace)

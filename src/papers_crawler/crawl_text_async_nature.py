@@ -387,7 +387,7 @@ async def crawl_text_nature_async(
                         await page.wait_for_timeout(1000)
                         logger.debug(f"Clicked cookie consent: {selector}")
                         return True
-                except:
+                except Exception:
                     continue
                     
         except Exception as e:
@@ -503,7 +503,7 @@ async def crawl_text_nature_async(
                                 # Extract year from ISO date (YYYY-MM-DD)
                                 try:
                                     article_year = int(article_date[:4])
-                                except:
+                                except (ValueError, TypeError):
                                     logger.debug(f"Could not parse year from date: {article_date}")
                                     continue
                                 
@@ -601,42 +601,43 @@ async def crawl_text_nature_async(
     
     print(f"\n🎉 Extracted {found_count} JSON files to {out_folder}")
     
-    # Create CSV summary
+    # Create CSV summary and ZIP archive
     if saved_files:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+        # CSV summary
         csv_filename = f"extraction_summary_{timestamp}.csv"
         csv_path = os.path.join(out_folder, csv_filename)
-        
+
         print(f"\n📄 Creating extraction summary CSV: {csv_filename}")
-        
+
         try:
             import csv
             with open(csv_path, 'w', newline='', encoding='utf-8') as csvfile:
                 writer = csv.writer(csvfile)
                 writer.writerow(['Number', 'Journal', 'Article Name', 'Publish Date', 'File Path', 'File Size (KB)'])
-                
+
                 for idx, (file_path, article_name, publish_date) in enumerate(article_metadata, 1):
                     journal_name = os.path.basename(os.path.dirname(file_path))
                     file_size_kb = os.path.getsize(file_path) / 1024 if os.path.exists(file_path) else 0
                     writer.writerow([idx, journal_name, article_name, publish_date, file_path, f"{file_size_kb:.2f}"])
-            
+
             logger.info(f"✅ CSV summary saved to: {csv_path}")
         except Exception as e:
             logger.error(f"❌ Failed to create CSV summary: {e}")
-    
-    # Create ZIP archive
-    if saved_files:
+
+        # ZIP archive
         print(f"\n📦 Creating ZIP archive with all extracted JSON files...")
-        
+
         zip_filename = f"all_nature_journals_json_{timestamp}.zip"
         zip_path = os.path.join(out_folder, zip_filename)
-        
+
         try:
             with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
                 for file_path in saved_files:
                     arcname = os.path.relpath(file_path, out_folder)
                     zipf.write(file_path, arcname)
-            
+
             zip_size_mb = os.path.getsize(zip_path) / (1024 * 1024)
             logger.info(f"✅ Created ZIP archive: {zip_filename} ({zip_size_mb:.1f} MB)")
         except Exception as e:

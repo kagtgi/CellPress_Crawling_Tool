@@ -1518,7 +1518,7 @@ async def crawl_text_async(
                             # Wait for issue links to appear in the DOM
                             try:
                                 await archive_page.wait_for_selector('a[href*="/issue?pii="]', timeout=5000, state='attached')
-                            except:
+                            except Exception:
                                 pass  # Continue even if selector doesn't appear
                                 
                     except Exception as e:
