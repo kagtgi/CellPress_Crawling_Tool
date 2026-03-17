@@ -16,9 +16,9 @@ from urllib.parse import urlencode
 from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
 
-logger = logging.getLogger(__name__)
 from playwright_stealth import Stealth
-logging.basicConfig(level=logging.INFO)
+
+logger = logging.getLogger(__name__)
 
 
 def _print_page_as_pdf(page, url: str, dest_folder: str, title: str, progress_callback=None) -> Optional[str]:
@@ -110,11 +110,6 @@ def crawl(
     downloaded_files = []
     open_access_articles = []
     total_articles_found = 0
-
-    stealth = Stealth(
-        navigator_languages_override=("en-US", "en"),
-        init_scripts_only=True
-    )
 
     with sync_playwright() as p:
         # Use Firefox with PDF download preferences

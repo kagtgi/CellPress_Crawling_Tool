@@ -368,7 +368,7 @@ def _write_csv(articles: List[Dict], path: str, label: str = "") -> None:
     ]
     try:
         with open(path, "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
+            writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore", restval="")
             writer.writeheader()
             writer.writerows(articles)
         size_kb = os.path.getsize(path) / 1024

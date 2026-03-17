@@ -1,4 +1,6 @@
-"""papers_crawler package"""
+"""papers_crawler — crawl papers from Cell.com, Nature.com, and PubMed."""
+
+__version__ = "1.0.0"
 
 # Regular sync API (for scripts and Streamlit)
 from .crawler import crawl, discover_journals
