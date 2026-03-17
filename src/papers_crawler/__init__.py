@@ -12,17 +12,33 @@ from .crawl_text_async import crawl_text_async
 # Nature.com text extraction
 from .crawl_text_async_nature import (
     crawl_text_nature_async,
+    crawl_titles_nature_async,
     discover_journals_nature_async,
     extract_fulltext_nature_as_json,
 )
 
+# PubMed crawling (NCBI E-utilities, no browser required)
+from .crawl_pubmed_async import (
+    search_pubmed_async,
+    crawl_pubmed_async,
+    crawl_pubmed_journals_async,
+)
+
 __all__ = [
+    # Cell.com – PDF download
     "crawl",
     "discover_journals",
     "crawl_async",
     "discover_journals_async",
+    # Cell.com – full-text JSON
     "crawl_text_async",
+    # Nature.com – full-text JSON
     "crawl_text_nature_async",
+    "crawl_titles_nature_async",
     "discover_journals_nature_async",
     "extract_fulltext_nature_as_json",
+    # PubMed – title & metadata crawling
+    "search_pubmed_async",
+    "crawl_pubmed_async",
+    "crawl_pubmed_journals_async",
 ]
