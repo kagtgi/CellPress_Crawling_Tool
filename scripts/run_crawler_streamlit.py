@@ -38,7 +38,7 @@ if st.button("🔄 Load journals from Cell.com"):
             if journal_count > 0:
                 st.success(f"✅ Loaded {journal_count} journals!")
             else:
-                st.error("❌ Failed to load journals. Check that Playwright is installed: `poetry run playwright install chromium`")
+                st.error("❌ Failed to load journals. Check that Playwright is installed: `playwright install firefox`")
         except Exception as e:
             error_msg = str(e)
             if "403 Forbidden" in error_msg:
@@ -78,7 +78,7 @@ if st.button("🔄 Load journals from Cell.com"):
                     pass
             else:
                 st.error(f"❌ Error loading journals: {error_msg}")
-                st.info("Make sure Playwright browsers are installed: `poetry run playwright install chromium`")
+                st.info("Make sure Playwright browsers are installed: `playwright install firefox`")
 
 st.divider()
 

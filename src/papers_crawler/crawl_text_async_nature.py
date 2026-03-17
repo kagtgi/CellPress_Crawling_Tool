@@ -644,3 +644,206 @@ async def crawl_text_nature_async(
             logger.error(f"❌ Failed to create ZIP archive: {e}")
     
     return saved_files, open_access_articles
+
+
+async def crawl_titles_nature_async(
+    year_from: int = 2024,
+    year_to: int = 2024,
+    journal_slugs: Optional[List[str]] = None,
+    headless: bool = True,
+    limit: Optional[int] = None,
+    progress_callback=None,
+) -> Tuple[List[Dict], List[Dict]]:
+    """Crawl Nature.com journal listing pages and collect ALL paper titles for a year range.
+
+    Unlike ``crawl_text_nature_async`` (which only downloads open-access full text),
+    this function returns **every** article listed on Nature.com – both open-access
+    and subscription/fee-based papers – with a flag indicating which type each is.
+
+    Args:
+        year_from: Start year (inclusive).
+        year_to:   End year (inclusive).
+        journal_slugs: Nature journal slugs to crawl (e.g. ``["ni", "nature"]``).
+        headless: Run browser in headless mode.
+        limit: Maximum total articles to collect across all journals.
+        progress_callback: Called with ``(title: str, is_open_access: bool)`` for
+            each article found.
+
+    Returns:
+        Tuple[all_articles, oa_articles] where each element is a list of dicts::
+
+            {
+                "title":       str,
+                "url":         str,
+                "date":        str,   # ISO date string (YYYY-MM-DD)
+                "year":        int,
+                "journal":     str,   # journal slug
+                "open_access": bool,
+            }
+    """
+    all_articles: List[Dict] = []
+    oa_articles: List[Dict] = []
+
+    if not journal_slugs:
+        print("⚠️  No journal slugs provided – nothing to crawl.", flush=True)
+        return all_articles, oa_articles
+
+    print(f"🔍 Nature.com title crawler – collecting ALL article titles (OA + fee)")
+    print(f"📅 Year range: {year_from} – {year_to}")
+    print(f"📚 Journals: {', '.join(journal_slugs)}")
+
+    stealth = Stealth(
+        navigator_languages_override=("en-US", "en"),
+        init_scripts_only=True,
+    )
+
+    async def _handle_cookie_consent(page):
+        for selector in [
+            'button:has-text("Accept")',
+            'button:has-text("Accept all")',
+            'button:has-text("I Accept")',
+            'button:has-text("Agree")',
+            'button[id*="accept"]',
+            'button[class*="accept"]',
+        ]:
+            try:
+                button = page.locator(selector).first
+                if await button.is_visible(timeout=2000):
+                    await button.click()
+                    await page.wait_for_timeout(1000)
+                    return True
+            except Exception:
+                continue
+        return False
+
+    found_count = 0
+
+    async with async_playwright() as p:
+        for slug in journal_slugs:
+            if limit and found_count >= limit:
+                break
+
+            print(f"\n📚 Scanning journal: {slug}", flush=True)
+            base_url = f"https://www.nature.com/{slug}/research-articles"
+
+            browser = await p.firefox.launch(headless=headless)
+            context = await browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/115.0"
+            )
+            await stealth.apply_stealth_async(context)
+            page = await context.new_page()
+
+            try:
+                for year in range(year_to, year_from - 1, -1):
+                    if limit and found_count >= limit:
+                        break
+
+                    print(f"  📅 Year {year}", flush=True)
+                    page_num = 1
+                    first_page = True
+
+                    while True:
+                        if limit and found_count >= limit:
+                            break
+
+                        if page_num == 1:
+                            url = f"{base_url}?year={year}"
+                        else:
+                            url = f"{base_url}?searchType=journalSearch&sort=PubDate&year={year}&page={page_num}"
+
+                        await page.goto(url, timeout=30000)
+                        await page.wait_for_timeout(3000)
+
+                        if first_page:
+                            await _handle_cookie_consent(page)
+                            first_page = False
+
+                        html = await page.content()
+                        soup = BeautifulSoup(html, "html.parser")
+
+                        articles = soup.find_all(
+                            "article",
+                            {
+                                "class": "c-card",
+                                "itemtype": "http://schema.org/ScholarlyArticle",
+                            },
+                        )
+
+                        if not articles:
+                            print(f"  📭 No more articles on page {page_num} for {year}", flush=True)
+                            break
+
+                        print(f"  📄 Page {page_num}: {len(articles)} articles", flush=True)
+
+                        for art in articles:
+                            if limit and found_count >= limit:
+                                break
+
+                            # ── title ──────────────────────────────────────
+                            title_elem = art.find("h3", {"class": "c-card__title"})
+                            if not title_elem:
+                                continue
+                            article_title = title_elem.get_text(strip=True)
+
+                            # ── date ───────────────────────────────────────
+                            meta_section = art.find("div", {"class": "c-meta"})
+                            article_date = ""
+                            article_year_val = year
+                            if meta_section:
+                                date_elem = meta_section.find("time", {"datetime": True})
+                                if date_elem:
+                                    article_date = date_elem.get("datetime", "")
+                                    try:
+                                        article_year_val = int(article_date[:4])
+                                    except (ValueError, TypeError):
+                                        article_year_val = year
+
+                            # ── year filter ────────────────────────────────
+                            if not (year_from <= article_year_val <= year_to):
+                                continue
+
+                            # ── URL ────────────────────────────────────────
+                            article_link = art.find("a", {"class": "c-card__link"})
+                            article_href = article_link.get("href", "") if article_link else ""
+                            full_url = urljoin("https://www.nature.com", article_href) if article_href else ""
+
+                            # ── open-access flag ───────────────────────────
+                            is_oa = False
+                            if meta_section:
+                                oa_label = meta_section.find("span", {"data-test": "open-access"})
+                                is_oa = oa_label is not None
+
+                            record: Dict = {
+                                "title": article_title,
+                                "url": full_url,
+                                "date": article_date,
+                                "year": article_year_val,
+                                "journal": slug,
+                                "open_access": is_oa,
+                            }
+
+                            all_articles.append(record)
+                            if is_oa:
+                                oa_articles.append(record)
+                            found_count += 1
+
+                            oa_marker = "🔓 OA" if is_oa else "🔒 fee"
+                            print(f"    {oa_marker}  {article_title[:70]}", flush=True)
+
+                            if progress_callback:
+                                progress_callback(article_title, is_oa)
+
+                        page_num += 1
+
+            except Exception as e:
+                logger.error(f"❌ Failed to scan journal {slug}: {e}")
+                logger.debug(traceback.format_exc())
+            finally:
+                await browser.close()
+
+    print(
+        f"\n✅ Collected {len(all_articles)} total titles "
+        f"({len(oa_articles)} OA, {len(all_articles) - len(oa_articles)} fee-based)",
+        flush=True,
+    )
+    return all_articles, oa_articles

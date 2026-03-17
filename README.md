@@ -1,205 +1,410 @@
-# Cell.com PDF Crawler
+# papers-crawler
 
-This tool crawls **open-access** PDFs from Cell.com journals. You can select specific journals from the Cell.com navbar and download articles within a year range.
+A research-paper crawler that can:
+
+| Target | What you get |
+|--------|-------------|
+| **Cell.com (CellPress)** | Open-access **PDFs** and/or structured **full-text JSON** |
+| **Nature.com** | Structured **full-text JSON** (open-access articles) |
+| **Nature.com** | **All paper titles** for a year range — open-access *and* fee-based |
+| **PubMed** | **All paper titles + metadata** for any journal/year — no browser needed |
+
+---
 
 ## Features
 
-- 📚 Discovers all journals from Cell.com's navbar menu
-- ✅ Filters for open-access articles only
-- 📅 Year range filtering
-- 🎯 Multi-journal selection
-- 🌐 Web UI with Streamlit (no OS GUI dependencies)
+- Discovers all journals from Cell.com and Nature.com automatically
+- Year-range filtering for targeted crawling
+- Multi-journal selection in a single call
+- **Open-access full-text JSON** extraction (Cell.com + Nature.com)
+- **All-title listing** including fee/subscription papers (Nature.com + PubMed)
+- PubMed crawler using the NCBI E-utilities REST API — no browser required
+- CSV + ZIP export summaries after every crawl
+- Streamlit web UI for point-and-click operation
+- Progress callbacks for custom UI / logging integration
+- Automatic cookie-consent handling and Cloudflare-safe delays
+
+---
 
 ## Installation
 
-### Option 1: Using pip (Recommended for most users)
-
 ```bash
-# Create a virtual environment (recommended)
+# 1. Clone the repo
+git clone https://github.com/kagtgi/CellPress_Crawling_Tool.git
+cd CellPress_Crawling_Tool
+
+# 2. (Recommended) create a virtual environment
 python -m venv venv
+source venv/bin/activate   # Windows: venv\Scripts\activate
 
-# Activate the virtual environment
-# On Linux/Mac:
-source venv/bin/activate
-# On Windows:
-# venv\Scripts\activate
+# 3. Install Python dependencies
+pip install -r requirements.txt
 
-# Install dependencies from requirements.txt
-pip install -r requirements.txt --upgrade --no-deps
-
-# Install Firefox browser binaries (run once):
+# 4. Install Firefox browser binaries used by Playwright (run once)
 playwright install firefox
 playwright install --only-shell
-
 ```
 
-### Option 2: Using Poetry
+### Editable install (for development / Jupyter)
 
 ```bash
-# Playwright is recommended because it bundles browsers and works well in WSL
-poetry add playwright beautifulsoup4 requests streamlit
-
-# Install Firefox browser binaries (run once):
-poetry run playwright install firefox
-poetry run playwright install --only-shell
+pip install -e .
 ```
 
-## Usage
+---
 
-### Streamlit Web UI (Recommended)
+## Quick start
 
-**With pip:**
+### Streamlit web UI
+
 ```bash
 streamlit run scripts/run_crawler_streamlit.py
 ```
 
-**With Poetry:**
-```bash
-poetry run streamlit run scripts/run_crawler_streamlit.py
-```
+1. Click **"Load journals from Cell.com"**
+2. Select one or more journals
+3. Set year range and output folder
+4. Click **"Start Crawl"**
 
-1. Click **"Load journals from Cell.com"** to fetch the list of available journals
-2. Select one or more journals using checkboxes
-3. Set your year range (e.g., 2020-2024)
-4. Choose output folder
-5. Click **"Start Crawl"** to download open-access PDFs
+### Python / Jupyter
 
-### Programmatic Usage
-
-**Regular Python scripts:**
 ```python
-from papers_crawler.crawler import crawl, discover_journals
-
-# Discover available journals
-journals = discover_journals()
-print(f"Found {len(journals)} journals")
-
-# Crawl specific journals
-crawl(
-    keywords="",
-    year_from=2020,
-    year_to=2024,
-    out_folder="./papers",
-    headless=True,
-    limit=10,  # limit per journal
-    journal_slugs=["cell", "immunity", "neuron"],
+import asyncio
+from papers_crawler import (
+    crawl_async,               # CellPress PDFs
+    crawl_text_async,          # CellPress full-text JSON
+    crawl_text_nature_async,   # Nature full-text JSON
+    crawl_titles_nature_async, # ALL Nature titles (OA + fee)
+    crawl_pubmed_async,        # PubMed title + metadata
 )
 ```
 
-**Google Colab / Jupyter Notebooks:**
+---
 
-📓 **See complete example:** [`examples/colab_example.ipynb`](examples/colab_example.ipynb)
+## API reference
 
-**Important:** In Colab/Jupyter, use the async functions with `await`:
+### 1 — CellPress: discover journals
 
 ```python
-# Import the async functions directly (NOT the regular crawler!)
-from src.papers_crawler.crawler_async import crawl_async, discover_journals_async
+from papers_crawler import discover_journals, discover_journals_async
 
-# Discover available journals (use await since Colab runs in an async environment)
-journals = await discover_journals_async()
-print(f"Found {len(journals)} journals")
+# Sync (scripts, Streamlit)
+journals = discover_journals(force_refresh=False)
+# → List[Tuple[str, str]]  — (slug, display_name)
 
-# Show first 5 journals
-for slug, name in journals[:5]:
-    print(f"  {slug}: {name}")
-
-# Crawl specific journals (use await)
-downloaded_files, articles = await crawl_async(
-    year_from=2020,
-    year_to=2024,
-    out_folder="./papers",
-    headless=True,
-    limit=10,  # limit per journal
-    journal_slugs=["cell", "immunity", "neuron"],
-    crawl_archives=True,  # Also crawl /issue pages for more articles (including Open Archive)
-)
-
-print(f"Downloaded {len(downloaded_files)} PDFs")
+# Async (Jupyter / Colab)
+journals = await discover_journals_async(force_refresh=False)
 ```
 
-**Note:** 
-- Set `crawl_archives=True` to also crawl the `/issue` page for each journal, which provides access to archived articles
-- Articles in the "Open Archive" section are all freely accessible (no open-access tag check needed)
-- Regular issue articles still require the open-access tag (OALabel)
+### 2 — CellPress: download PDFs
 
-**Note:** The logger configuration at the top enables real-time progress messages showing:
-- ⬇️ Start downloading file: [Article Title]
-- ✅ Downloaded file: [Filename] (size & speed)
+```python
+from papers_crawler import crawl, crawl_async
 
-## How It Works
+# Sync
+file_paths, titles = crawl(
+    keywords      = "",            # free-text filter; "" = no filter
+    year_from     = 2023,
+    year_to       = 2024,
+    out_folder    = "papers",      # PDFs saved here, sub-folder per journal
+    headless      = True,
+    limit         = 10,            # max per journal; None = unlimited
+    journal_slugs = ["immunity", "cell"],
+)
 
-1. **Journal Discovery**: Parses Cell.com's navbar menu to extract journal slugs and names
-2. **Article Crawling**: For each selected journal, visits the `/newarticles` page
-3. **Open Access Filtering**: Only downloads articles marked as open access
-4. **PDF Download**: Uses Firefox with Playwright to automatically download PDFs by clicking links
-5. **Cookie Consent**: Automatically handles and accepts cookie consent popups
+# Async (Jupyter / Colab) — same params + crawl_archives
+file_paths, titles = await crawl_async(
+    year_from      = 2023,
+    year_to        = 2024,
+    out_folder     = "papers",
+    limit          = 10,
+    journal_slugs  = ["immunity"],
+    crawl_archives = True,  # also scrape /issue archive pages
+)
+```
+
+### 3 — CellPress: extract full-text JSON
+
+```python
+from papers_crawler import crawl_text_async
+
+json_paths, titles = await crawl_text_async(
+    year_from     = 2024,
+    year_to       = 2024,
+    out_folder    = "papers_text",
+    limit         = 5,
+    journal_slugs = ["immunity"],
+)
+```
+
+Each JSON file contains:
+
+```json
+{
+  "url": "https://www.cell.com/...",
+  "extracted_at": "2024-01-15T10:30:00",
+  "title": "Article title",
+  "authors": "Author A, Author B",
+  "publication_date": "2024-01-10",
+  "doi": "10.1016/...",
+  "Abstract": "...",
+  "Introduction": "...",
+  "Results": "...",
+  "Discussion": "...",
+  "Figures": "...",
+  "References": "..."
+}
+```
+
+### 4 — Nature.com: discover journals
+
+```python
+from papers_crawler import discover_journals_nature_async
+
+journals = await discover_journals_nature_async(force_refresh=False)
+# → List[Tuple[str, str]]  — (slug, display_name)
+```
+
+### 5 — Nature.com: extract full-text JSON (open-access only)
+
+```python
+from papers_crawler import crawl_text_nature_async
+
+json_paths, titles = await crawl_text_nature_async(
+    year_from     = 2024,
+    year_to       = 2024,
+    out_folder    = "papers_nature",
+    limit         = 5,
+    journal_slugs = ["nature-medicine", "nature-immunology"],
+)
+```
+
+### 6 — Nature.com: crawl ALL titles (open-access + fee-based)
+
+Returns every article title listed on the journal's research-articles page, with an `open_access` flag — no full-text is downloaded.
+
+```python
+from papers_crawler import crawl_titles_nature_async
+
+all_articles, oa_articles = await crawl_titles_nature_async(
+    year_from     = 2024,
+    year_to       = 2024,
+    journal_slugs = ["nature", "nature-medicine"],
+    limit         = 200,   # total cap across all journals
+)
+
+# Each record is a dict:
+# {
+#   "title":       str,
+#   "url":         str,
+#   "date":        str,   # "YYYY-MM-DD"
+#   "year":        int,
+#   "journal":     str,   # slug
+#   "open_access": bool,
+# }
+
+for article in all_articles:
+    status = "OA" if article["open_access"] else "fee"
+    print(f"[{status}] {article['title']}")
+```
+
+### 7 — PubMed: search titles and metadata
+
+Uses the **NCBI E-utilities REST API** — no browser or Playwright needed.
+
+```python
+from papers_crawler import search_pubmed_async, crawl_pubmed_async, crawl_pubmed_journals_async
+
+# ── Single search ──────────────────────────────────────────────────────────
+all_articles, oa_articles = await search_pubmed_async(
+    journal   = "Nature Immunology",  # as it appears in PubMed
+    year_from = 2023,
+    year_to   = 2024,
+    keywords  = "",                   # optional extra search terms
+    limit     = 500,
+    api_key   = None,                 # optional NCBI API key (10 req/s vs 3 req/s)
+)
+
+# ── Single journal + save CSV ──────────────────────────────────────────────
+all_articles, oa_articles = await crawl_pubmed_async(
+    journal    = "Cell",
+    year_from  = 2023,
+    year_to    = 2024,
+    out_folder = "papers_pubmed",     # CSV saved here
+    save_csv   = True,
+)
+
+# ── Multiple journals ──────────────────────────────────────────────────────
+all_articles, oa_articles = await crawl_pubmed_journals_async(
+    journals   = ["Nature", "Cell", "Science"],
+    year_from  = 2024,
+    year_to    = 2024,
+    out_folder = "papers_pubmed",
+)
+```
+
+Each article record contains:
+
+```python
+{
+    "pmid":        "38123456",
+    "title":       "Article title",
+    "authors":     "Smith J, Doe A",
+    "journal":     "Nature Immunology",
+    "pub_date":    "2024 Jan",
+    "year":        2024,
+    "doi":         "10.1038/...",
+    "pmc_id":      "PMC12345678",    # empty string if not on PMC
+    "open_access": True,             # True if pmc_id is present
+    "url":         "https://pubmed.ncbi.nlm.nih.gov/38123456/",
+    "pmc_url":     "https://www.ncbi.nlm.nih.gov/pmc/articles/PMC12345678/",
+}
+```
+
+> **Open-access detection in PubMed:** articles deposited in PubMed Central (PMC) are marked `open_access=True`. This covers most mandated open-access papers but may miss some hybrid OA articles not deposited in PMC.
+
+---
+
+## Common journal slugs
+
+### CellPress
+
+| Slug | Journal |
+|------|---------|
+| `cell` | Cell |
+| `immunity` | Immunity |
+| `neuron` | Neuron |
+| `cancer-cell` | Cancer Cell |
+| `cell-metabolism` | Cell Metabolism |
+| `cell-reports` | Cell Reports |
+| `current-biology` | Current Biology |
+| `developmental-cell` | Developmental Cell |
+| `joule` | Joule |
+| `matter` | Matter |
+
+### Nature
+
+| Slug | Journal |
+|------|---------|
+| `nature` | Nature |
+| `nature-medicine` | Nature Medicine |
+| `nature-cancer` | Nature Cancer |
+| `nature-biotechnology` | Nature Biotechnology |
+| `nature-genetics` | Nature Genetics |
+| `nature-immunology` | Nature Immunology |
+| `nature-neuroscience` | Nature Neuroscience |
+| `nature-cell-biology` | Nature Cell Biology |
+| `nature-methods` | Nature Methods |
+| `nature-communications` | Nature Communications |
+
+### PubMed journal names (examples)
+
+Use the journal name **as it appears in PubMed** (full name or MeSH abbreviation):
+
+| PubMed name | Journal |
+|-------------|---------|
+| `"Nature"` | Nature |
+| `"Nature medicine"` | Nature Medicine |
+| `"Cell"` | Cell |
+| `"Science (New York, N.Y.)"` | Science |
+| `"Nature immunology"` | Nature Immunology |
+| `"The New England journal of medicine"` | NEJM |
+
+> Tip: run `search_pubmed_async(journal="Nature Immunology", year_from=2024, year_to=2024, limit=1)` to verify the journal name resolves correctly before a large crawl.
+
+---
+
+## Progress callbacks
+
+All browser-based crawl functions accept two optional callbacks:
+
+```python
+def on_file_saved(filename: str, filepath: str):
+    """Called once per article after the file is saved."""
+    print(f"Saved: {filename}")
+
+def on_progress(current, total, status, file_size, speed_kbps, stage):
+    """Called repeatedly with overall progress."""
+    pct = 100 * current / max(total, 1)
+    print(f"[{pct:.0f}%] {stage}: {status}")
+
+json_paths, titles = await crawl_text_async(
+    journal_slugs           = ["immunity"],
+    year_from               = 2024,
+    year_to                 = 2024,
+    progress_callback       = on_file_saved,
+    total_progress_callback = on_progress,
+)
+```
+
+`crawl_pubmed_async` / `search_pubmed_async` accept a simpler `progress_callback(article_dict)` called per article.
+
+---
+
+## Output files
+
+Every crawl produces a timestamped CSV summary and a ZIP archive in `out_folder`:
+
+```
+papers_nature/
+├── nature-medicine/
+│   ├── Article_Title_2024.json
+│   └── ...
+├── extraction_summary_20240115_103045.csv
+└── all_nature_journals_json_20240115_103045.zip
+
+papers_pubmed/
+├── Cell/
+│   ├── pubmed_titles_20240115_103045.csv
+│   └── pubmed_oa_20240115_103045.csv
+└── pubmed_all_journals_20240115_103045.csv
+```
+
+CSV columns (full-text crawlers): `Number, Journal, Article Name, Publish Date, File Path, File Size (KB)`
+
+CSV columns (PubMed): `pmid, title, authors, journal, pub_date, year, doi, open_access, pmc_id, url, pmc_url`
+
+---
 
 ## Troubleshooting
 
-### Google Colab / Jupyter Notebooks
+### Jupyter / Google Colab: `RuntimeError: This event loop is already running`
 
-If you get errors like:
-- `"It looks like you are using Playwright Sync API inside the asyncio loop"`
-- `"RuntimeError: This event loop is already running"`
+Use `await` directly — never `asyncio.run()` inside Jupyter:
 
-You need to use the **async versions** with `await`:
-
-**❌ Don't use (will fail in Colab):**
 ```python
-from src.papers_crawler.crawler import crawl, discover_journals
-journals = discover_journals()  # Error!
+# Wrong:
+asyncio.run(crawl_text_async(...))
+
+# Correct:
+result = await crawl_text_async(...)
 ```
 
-**✅ Do use (works in Colab):**
-```python
-from src.papers_crawler.crawler_async import crawl_async, discover_journals_async
+### Cloudflare challenge / CAPTCHA
 
-# Use await since Colab runs in an async environment
-journals = await discover_journals_async()  # Works!
-downloaded_files, articles = await crawl_async(...)  # Works!
-```
+Set `headless=False` to open a visible browser, solve the CAPTCHA once, then the crawl resumes automatically.
 
-📓 **See complete working example:** [`examples/colab_example.ipynb`](examples/colab_example.ipynb)
+### "No articles found" on Cell.com
 
-**Installation in Colab:**
-```bash
-# Clone and install
-!git clone https://github.com/nct2309/cellpress_crawling.git
-%cd cellpress_crawling
-!pip install -r requirements.txt --upgrade --no-deps
-!playwright install firefox
-!playwright install --only-shell
-!playwright install-deps
-```
+- Confirm the slug is correct: `await discover_journals_async()`
+- Cell.com's `/newarticles` page may be empty for older years — try `crawl_archives=True` in `crawl_async`.
 
-### 403 Forbidden Error / Cloudflare Challenges
+### PubMed returns fewer results than expected
 
-If you encounter a "403 Client Error: Forbidden" or "Cloudflare Challenge Detected" when loading journals or downloading PDFs, this means Cell.com is blocking automated requests due to anti-bot protection. Here are the solutions:
+- Verify the journal name with a small test call first.
+- Use an NCBI API key (`api_key=`) for higher rate limits (10 req/s vs 3 req/s). Register at https://www.ncbi.nlm.nih.gov/account/
+- The default `limit=10_000` should cover most journals per year.
 
-1. **Automatic Fallback**: The tool will automatically try Playwright if requests fail, and use a hardcoded journal list if both fail
-2. **Wait and Retry**: Cloudflare challenges are often temporary - try again later
-3. **Use a VPN**: Try from a different IP address to bypass geographic restrictions
-4. **Try Different Times**: Peak hours may have more protection
-5. **Manual Journal Entry**: The UI provides an option to manually enter journal slugs
-6. **Manual Download**: You can manually download PDFs from the website
-7. **Contact Cell.com**: They may have changed their access policies
+### `playwright._impl._errors.Error: Executable doesn't exist`
 
-### Common Journal Slugs
+Re-install the browser: `playwright install firefox`
 
-If you need to manually enter journals, here are some common slugs:
-- `cell` - Cell
-- `immunity` - Immunity  
-- `neuron` - Neuron
-- `current-biology` - Current Biology
-- `cell-reports` - Cell Reports
-- `cell-metabolism` - Cell Metabolism
+---
 
 ## Notes
 
-- ⚠️ This tool only downloads **open-access** articles to respect copyright
-- 🤝 Uses polite delays (1 second between downloads) to avoid overloading the server
-- 💾 Journal lists are cached in `.cache/papers_crawler/journals.json`
-- 🦊 Uses Firefox with Playwright for better cross-platform support and reliable PDF downloads
-- 🍪 Automatically handles cookie consent popups
-- 🛡️ Includes fallback mechanisms for when Cell.com blocks automated requests
+- This tool only **downloads open-access content** from Cell.com and Nature.com to respect copyright.
+- Title listing (`crawl_titles_nature_async`, `crawl_pubmed_async`) collects only metadata — no full-text is accessed for fee-based articles.
+- Polite delays (≥1 second between requests) are built in for browser-based crawlers.
+- NCBI E-utilities requests respect the 3 req/s limit (or 10 req/s with an API key).
+- Journal lists are cached in `.cache/papers_crawler/` — delete the cache or pass `force_refresh=True` to update.
