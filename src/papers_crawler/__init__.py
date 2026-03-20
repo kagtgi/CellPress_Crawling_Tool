@@ -3,16 +3,16 @@
 __version__ = "1.0.0"
 
 # Regular sync API (for scripts and Streamlit)
-from .crawler import crawl, discover_journals
+from .cell.crawl_cell_pdf_sync import crawl, discover_journals
 
 # Async API (for Colab/Jupyter notebooks)
-from .crawler_async import crawl_async, discover_journals_async
+from .cell.crawl_cell_pdf_async import crawl_async, discover_journals_async
 
 # Cell.com text extraction
-from .crawl_text_async import crawl_text_async
+from .cell.crawl_cell_text_async import crawl_text_async
 
 # Nature.com text extraction
-from .crawl_text_async_nature import (
+from .nature.crawl_nature_async import (
     crawl_text_nature_async,
     crawl_titles_nature_async,
     discover_journals_nature_async,
@@ -20,7 +20,7 @@ from .crawl_text_async_nature import (
 )
 
 # PubMed crawling (NCBI E-utilities, no browser required)
-from .crawl_pubmed_async import (
+from .pubmed.crawl_pubmed_async import (
     search_pubmed_async,
     crawl_pubmed_async,
     crawl_pubmed_journals_async,
@@ -34,7 +34,7 @@ __all__ = [
     "discover_journals_async",
     # Cell.com – full-text JSON
     "crawl_text_async",
-    # Nature.com – full-text JSON
+    # Nature.com – full-text JSON and PDF
     "crawl_text_nature_async",
     "crawl_titles_nature_async",
     "discover_journals_nature_async",

@@ -28,10 +28,10 @@ from playwright_stealth import Stealth
 
 # Import CLIProgressTracker from crawler_async
 try:
-    from .crawler_async import CLIProgressTracker
+    from .crawl_cell_pdf_async import CLIProgressTracker
 except ImportError:
     # Fallback if relative import fails
-    from crawler_async import CLIProgressTracker
+    from crawl_cell_pdf_async import CLIProgressTracker
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +57,7 @@ async def extract_fulltext_as_json(page: Page, fulltext_url: str) -> Optional[Di
         Dict: JSON structure with sections as keys and content as values, or None if extraction fails
     """
     try:
-        logger.info(f"📖 Navigating to full-text page: {fulltext_url}")
+        logger.info(f"Navigating to full-text page: {fulltext_url}")
         await page.goto(fulltext_url, timeout=30000)
         await page.wait_for_timeout(2000)
         
@@ -778,7 +778,7 @@ async def extract_fulltext_as_json(page: Page, fulltext_url: str) -> Optional[Di
         
         # Fallback: if article element or wrappers not found, use old extraction method
         if not text_parts:
-            logger.warning("⚠️ Article wrappers not found, using fallback extraction")
+            logger.warning(" Article wrappers not found, using fallback extraction")
             
             # Extract title
             title_elem = soup.find("h1", {"property": "name"})
@@ -963,14 +963,14 @@ async def extract_fulltext_as_json(page: Page, fulltext_url: str) -> Optional[Di
         full_text = "".join(text_parts)
         
         if json_data or full_text.strip():
-            logger.info(f"✅ Successfully extracted {len(json_data)} sections with {len(full_text)} characters total")
+            logger.info(f"Successfully extracted {len(json_data)} sections with {len(full_text)} characters total")
             return json_data
         else:
-            logger.warning("⚠️ No text content extracted from page")
+            logger.warning(" No text content extracted from page")
             return None
             
     except Exception as e:
-        logger.error(f"❌ Failed to extract full-text: {e}")
+        logger.error(f" Failed to extract full-text: {e}")
         logger.debug(traceback.format_exc())
         return None
 
@@ -988,10 +988,10 @@ async def save_json_to_file(json_content: Dict, file_path: str) -> bool:
     try:
         with open(file_path, 'w', encoding='utf-8') as f:
             json.dump(json_content, f, ensure_ascii=False, indent=2)
-        logger.info(f"💾 Saved JSON to: {file_path}")
+        logger.info(f"Saved JSON to: {file_path}")
         return True
     except Exception as e:
-        logger.error(f"❌ Failed to save JSON file: {e}")
+        logger.error(f" Failed to save JSON file: {e}")
         return False
 
 
@@ -1083,8 +1083,8 @@ async def crawl_text_async(
         """Crawl a specific issue page for articles and extract text."""
         nonlocal found_count, saved_files, open_access_articles, article_metadata
         
-        print(f"📖 Loading issue: {issue_url}", flush=True)
-        print(f"📅 Issue date (from list): {issue_date}", flush=True)
+        print(f"Loading issue: {issue_url}", flush=True)
+        print(f"Issue date (from list): {issue_date}", flush=True)
         await page.goto(issue_url, timeout=30000)
         await page.wait_for_timeout(2000)
         
@@ -1094,7 +1094,7 @@ async def crawl_text_async(
         soup = BeautifulSoup(html, "html.parser")
         
         if issue_date == "Unknown":
-            logger.warning(f"⚠️ No date provided for issue, attempting to extract from page...")
+            logger.warning(f" No date provided for issue, attempting to extract from page...")
             date_selectors = [
                 ("div", {"class": "issue-item__title"}),
                 ("span", {"class": "volume-issue"}),
@@ -1109,7 +1109,7 @@ async def crawl_text_async(
                     text = elem.get_text(strip=True)
                     if text and text != "Unknown":
                         issue_date = text
-                        print(f"📅 Extracted date from page: {issue_date}", flush=True)
+                        print(f"Extracted date from page: {issue_date}", flush=True)
                         break
         
         articles = soup.select(".articleCitation")
@@ -1142,7 +1142,7 @@ async def crawl_text_async(
             article_title = title_elem.get_text(strip=True) if title_elem else f"Article {found_count + 1}"
             publish_date = issue_date
             
-            print(f"📄 Found {'open-archive' if is_open_archive else 'open-access'} article: {article_title[:60]}...", flush=True)
+            print(f"Found {'open-archive' if is_open_archive else 'open-access'} article: {article_title[:60]}...", flush=True)
             
             try:
                 safe_title = "".join(c for c in article_title if c.isalnum() or c in (' ', '-', '_')).strip()
@@ -1151,7 +1151,7 @@ async def crawl_text_async(
                 dest_path = os.path.join(journal_folder, filename)
                 
                 if os.path.exists(dest_path) and os.path.getsize(dest_path) > 100:
-                    logger.info(f"⏭️  Skipping already extracted: {filename}")
+                    logger.info(f"Skipping already extracted: {filename}")
                     continue
                 
                 if total_progress_callback:
@@ -1163,12 +1163,12 @@ async def crawl_text_async(
                 
                 extract_start_time = time.time()
                 
-                print(f"🔗 Navigating to full-text: {fulltext_link[:80]}...", flush=True)
+                print(f"Navigating to full-text: {fulltext_link[:80]}...", flush=True)
                 
                 # Extract JSON from full-text page
                 json_content = await extract_fulltext_as_json(page, fulltext_link)
                 
-                print(f"✅ Extraction completed. Sections: {len(json_content) if json_content else 0}", flush=True)
+                print(f"Extraction completed. Sections: {len(json_content) if json_content else 0}", flush=True)
                 
                 if json_content:
                     # Save to JSON file
@@ -1186,7 +1186,7 @@ async def crawl_text_async(
                             speed_kbps = 0
                         
                         if cli_progress is None:
-                            print(f"✅ Extracted {file_size_kb:.1f} KB in {extract_time:.1f}s ({speed_kbps:.1f} KB/s)", flush=True)
+                            print(f"Extracted {file_size_kb:.1f} KB in {extract_time:.1f}s ({speed_kbps:.1f} KB/s)", flush=True)
                         
                         saved_files.append(dest_path)
                         open_access_articles.append(article_title)
@@ -1200,14 +1200,14 @@ async def crawl_text_async(
                         if total_progress_callback:
                             total_progress_callback(found_count, found_count, f"Saved: {article_title[:50]}...", file_size, speed_kbps, "completed")
                         elif cli_progress:
-                            cli_progress.update(found_count, found_count, f"✅ {article_title[:30]}...", file_size, speed_kbps, "completed")
+                            cli_progress.update(found_count, found_count, f" {article_title[:30]}...", file_size, speed_kbps, "completed")
                     else:
-                        print(f"❌ Failed to save JSON file: {dest_path}", flush=True)
+                        print(f"Failed to save JSON file: {dest_path}", flush=True)
                 else:
-                    print(f"❌ Extracted JSON is empty or invalid", flush=True)
+                    print(f"Extracted JSON is empty or invalid", flush=True)
                     
             except Exception as e:
-                print(f"❌ Failed to extract text for '{article_title[:50]}': {e}", flush=True)
+                print(f"Failed to extract text for '{article_title[:50]}': {e}", flush=True)
                 print(traceback.format_exc(), flush=True)
             
             await asyncio.sleep(1)
@@ -1218,11 +1218,11 @@ async def crawl_text_async(
         if total_progress_callback:
             total_progress_callback(0, 0, "Scanning journals for open access articles...", 0, 0, "scanning")
         elif cli_progress:
-            print(f"🔍 Scanning {len(journal_slugs)} journal(s) for open access articles...", flush=True)
+            print(f"Scanning {len(journal_slugs)} journal(s) for open access articles...", flush=True)
         
         async with async_playwright() as p:
             for slug in journal_slugs:
-                print(f"\n🚀 Launching Firefox for journal: {slug}...", flush=True)
+                print(f"\n Launching Firefox for journal: {slug}...", flush=True)
                 
                 browser = await p.firefox.launch(headless=headless)
                 
@@ -1244,7 +1244,7 @@ async def crawl_text_async(
                     }
                 )
                 
-                print(f"✅ Firefox browser ready for {slug}", flush=True)
+                print(f"Firefox browser ready for {slug}", flush=True)
                 
                 page = await context.new_page()
                 
@@ -1258,7 +1258,7 @@ async def crawl_text_async(
                 
                 journal_folder = os.path.join(out_folder, slug.replace('/', '_'))
                 os.makedirs(journal_folder, exist_ok=True)
-                print(f"📂 Journal folder: {journal_folder}")
+                print(f"Journal folder: {journal_folder}")
                 
                 url = f"https://www.cell.com/{slug}/newarticles"
                 print(f"🔎 Crawling journal: {slug} at {url}")
@@ -1278,7 +1278,7 @@ async def crawl_text_async(
                 articles = soup.select(".articleCitation")
                 
                 if not articles:
-                    print(f"⚠️ No articles found on {url}. Page title: {page_title}")
+                    print(f"No articles found on {url}. Page title: {page_title}")
                     await page.close()
                     await context.close()
                     await browser.close()
@@ -1288,7 +1288,7 @@ async def crawl_text_async(
                 journal_download_count = 0
                 journal_target = min(oa_count, limit) if limit else oa_count
                 total_articles_found += journal_target
-                print(f"📚 Found {oa_count} open access articles in {slug} (will extract up to {journal_target})")
+                print(f"Found {oa_count} open access articles in {slug} (will extract up to {journal_target})")
                 
                 if total_progress_callback:
                     total_progress_callback(found_count, total_articles_found, f"Found {total_articles_found} open access articles", 0, 0, "found")
@@ -1339,7 +1339,7 @@ async def crawl_text_async(
                     article_title = title_elem.get_text(strip=True) if title_elem else f"Article {found_count + 1}"
                     publish_date = year_text.strip() if year_text else "Unknown"
                     
-                    print(f"📄 Found open-access article: {article_title[:60]}...")
+                    print(f"Found open-access article: {article_title[:60]}...")
                     
                     try:
                         safe_title = "".join(c for c in article_title if c.isalnum() or c in (' ', '-', '_')).strip()
@@ -1348,7 +1348,7 @@ async def crawl_text_async(
                         dest_path = os.path.join(journal_folder, filename)
                         
                         if os.path.exists(dest_path) and os.path.getsize(dest_path) > 100:
-                            logger.info(f"⏭️  Skipping already extracted: {filename}")
+                            logger.info(f"Skipping already extracted: {filename}")
                             continue
                         
                         if total_progress_callback:
@@ -1360,7 +1360,7 @@ async def crawl_text_async(
                         
                         extract_start_time = time.time()
                         
-                        print(f"🔗 Navigating to full-text: {fulltext_link[:80]}...", flush=True)
+                        print(f"Navigating to full-text: {fulltext_link[:80]}...", flush=True)
                         
                         json_content = await extract_fulltext_as_json(page, fulltext_link)
                         
@@ -1380,7 +1380,7 @@ async def crawl_text_async(
                                     speed_kbps = 0
                                 
                                 if cli_progress is None:
-                                    print(f"✅ Extracted {file_size_kb:.1f} KB in {extract_time:.1f}s ({speed_kbps:.1f} KB/s)", flush=True)
+                                    print(f"Extracted {file_size_kb:.1f} KB in {extract_time:.1f}s ({speed_kbps:.1f} KB/s)", flush=True)
                                 
                                 saved_files.append(dest_path)
                                 open_access_articles.append(article_title)
@@ -1394,14 +1394,14 @@ async def crawl_text_async(
                                 if total_progress_callback:
                                     total_progress_callback(found_count, found_count, f"Saved: {article_title[:50]}...", file_size, speed_kbps, "completed")
                                 elif cli_progress:
-                                    cli_progress.update(found_count, found_count, f"✅ {article_title[:30]}...", file_size, speed_kbps, "completed")
+                                    cli_progress.update(found_count, found_count, f" {article_title[:30]}...", file_size, speed_kbps, "completed")
                             else:
-                                logger.error(f"❌ Failed to save text file: {dest_path}")
+                                logger.error(f" Failed to save text file: {dest_path}")
                         else:
-                            logger.error(f"❌ Extracted text is too small or empty")
+                            logger.error(f" Extracted text is too small or empty")
                             
                     except Exception as e:
-                        logger.error(f"❌ Failed to extract text for '{article_title[:50]}': {e}")
+                        logger.error(f" Failed to extract text for '{article_title[:50]}': {e}")
                         logger.debug(traceback.format_exc())
                     
                     await asyncio.sleep(1)
@@ -1413,8 +1413,8 @@ async def crawl_text_async(
                 # didn't yield any extractable JSON.
                 should_crawl_archives = crawl_archives or (journal_download_count == 0)
                 if should_crawl_archives:
-                    print(f"\n📚 Crawling issue archives for journal: {slug}", flush=True)
-                    print(f"🔧 Creating separate context for archive crawling...", flush=True)
+                    print(f"\n Crawling issue archives for journal: {slug}", flush=True)
+                    print(f"Creating separate context for archive crawling...", flush=True)
                     
                     archive_context = await browser.new_context(
                         accept_downloads=False,
@@ -1443,7 +1443,7 @@ async def crawl_text_async(
                         });
                     """)
                     
-                    print(f"✅ Archive context ready", flush=True)
+                    print(f"Archive context ready", flush=True)
                     
                     issue_index_url = f"https://www.cell.com/{slug}/issues"
                     print(f"Loading issue archive index: {issue_index_url}", flush=True)
@@ -1457,7 +1457,7 @@ async def crawl_text_async(
                     try:
                         outer_accordions = archive_page.locator('a.accordion__control')
                         accordion_count = await outer_accordions.count()
-                        print(f"🔧 Found {accordion_count} year range sections, expanding all...", flush=True)
+                        print(f"Found {accordion_count} year range sections, expanding all...", flush=True)
                         
                         for i in range(accordion_count):
                             try:
@@ -1468,14 +1468,14 @@ async def crawl_text_async(
                                     accordion_text = await accordion.text_content()
                                     await accordion.click()
                                     await archive_page.wait_for_timeout(800)
-                                    print(f"  ✅ Expanded section: {accordion_text.strip()}", flush=True)
+                                    print(f"Expanded section: {accordion_text.strip()}", flush=True)
                             except Exception as e:
                                 logger.debug(f"Failed to expand accordion {i}: {e}")
                         
                         # Wait for all accordion content to load
                         await archive_page.wait_for_timeout(1500)
                     except Exception as e:
-                        print(f"⚠️ Failed to expand year range sections: {e}", flush=True)
+                        print(f"Failed to expand year range sections: {e}", flush=True)
                     
                     # STEP 2: Expand individual volume toggles for target years
                     # These are <a> tags with class "list-of-issues__group-expand"
@@ -1483,7 +1483,7 @@ async def crawl_text_async(
                     try:
                         volume_toggles = archive_page.locator('a.list-of-issues__group-expand')
                         toggle_count = await volume_toggles.count()
-                        print(f"🔧 Found {toggle_count} volume toggles, identifying target volumes...", flush=True)
+                        print(f"Found {toggle_count} volume toggles, identifying target volumes...", flush=True)
                         
                         # First pass: identify which volumes to expand
                         for i in range(toggle_count):
@@ -1500,19 +1500,19 @@ async def crawl_text_async(
                                 logger.debug(f"Failed to check volume toggle {i}: {e}")
                         
                         # Second pass: click all target volumes
-                        print(f"🔧 Expanding {len(volumes_to_expand)} volumes...", flush=True)
+                        print(f"Expanding {len(volumes_to_expand)} volumes...", flush=True)
                         for idx, vol_text in volumes_to_expand:
                             try:
                                 toggle = volume_toggles.nth(idx)
                                 await toggle.click()
-                                print(f"  ✅ Clicked: {vol_text}", flush=True)
+                                print(f"Clicked: {vol_text}", flush=True)
                                 await archive_page.wait_for_timeout(500)
                             except Exception as e:
                                 logger.debug(f"Failed to click volume {vol_text}: {e}")
                         
                         # Wait for all AJAX content to load
                         if volumes_to_expand:
-                            print(f"⏳ Waiting for issue lists to load...", flush=True)
+                            print(f"Waiting for issue lists to load...", flush=True)
                             await archive_page.wait_for_timeout(3000)
                             
                             # Wait for issue links to appear in the DOM
@@ -1522,12 +1522,12 @@ async def crawl_text_async(
                                 pass  # Continue even if selector doesn't appear
                                 
                     except Exception as e:
-                        print(f"⚠️ Failed to expand volume toggles: {e}", flush=True)
+                        print(f"Failed to expand volume toggles: {e}", flush=True)
 
                     html = await archive_page.content()
                     soup = BeautifulSoup(html, "html.parser")
                     
-                    print(f"📂 Parsing issue links from page HTML...", flush=True)
+                    print(f"Parsing issue links from page HTML...", flush=True)
                     issue_links = []
                     in_open_archive = False
                     
@@ -1536,7 +1536,7 @@ async def crawl_text_async(
                     all_issue_links = soup.select(
                         'a[href*="/issue?pii="]'
                     )
-                    print(f"🔍 Found {len(all_issue_links)} total issue links on page", flush=True)
+                    print(f"Found {len(all_issue_links)} total issue links on page", flush=True)
                     
                     for link in all_issue_links:
                         href = link.get("href", "")
@@ -1549,7 +1549,7 @@ async def crawl_text_async(
                             open_archive_div = parent_li.find_previous("div", class_="list-of-issues__open-archive")
                             if open_archive_div and not in_open_archive:
                                 in_open_archive = True
-                                print(f"📂 Entered Open Archive section", flush=True)
+                                print(f"Entered Open Archive section", flush=True)
                         
                         # Try to extract date/year from the link or its parent <li> text.
                         # Use a robust regex to find a 4-digit year (e.g., 2024).
@@ -1573,15 +1573,15 @@ async def crawl_text_async(
                                     full_url = urljoin("https://www.cell.com", href)
                                     if (full_url, in_open_archive, date_text) not in issue_links:
                                         issue_links.append((full_url, in_open_archive, date_text))
-                                        logger.debug(f"✅ Found issue: {date_text[:50]} ({'Open Archive' if in_open_archive else 'Regular'})")
+                                        logger.debug(f" Found issue: {date_text[:50]} ({'Open Archive' if in_open_archive else 'Regular'})")
                                 else:
-                                    logger.debug(f"⏭️  Skipped issue (year {issue_year} not in range): {date_text[:50]}")
+                                    logger.debug(f"  Skipped issue (year {issue_year} not in range): {date_text[:50]}")
                             else:
-                                logger.debug(f"⚠️  No year found in link text for: {href[:50]}")
+                                logger.debug(f"  No year found in link text for: {href[:50]}")
                         except Exception as e:
-                            logger.debug(f"⚠️  Failed to parse date from link {href[:50]} - {e}")
+                            logger.debug(f"  Failed to parse date from link {href[:50]} - {e}")
                     
-                    print(f"📚 Found {len(issue_links)} issues to crawl for {slug} (filtered by year {year_from}-{year_to})", flush=True)
+                    print(f"Found {len(issue_links)} issues to crawl for {slug} (filtered by year {year_from}-{year_to})", flush=True)
                     
                     for issue_url, is_open_archive, issue_date in issue_links:
                         if limit and journal_download_count >= limit:
@@ -1594,11 +1594,11 @@ async def crawl_text_async(
                         
                         await asyncio.sleep(2)
                     
-                    print(f"🔒 Closing archive context for journal: {slug}", flush=True)
+                    print(f"Closing archive context for journal: {slug}", flush=True)
                     await archive_page.close()
                     await archive_context.close()
                 
-                print(f"🔒 Closing browser for journal: {slug}", flush=True)
+                print(f"Closing browser for journal: {slug}", flush=True)
                 await page.close()
                 await context.close()
                 await browser.close()
@@ -1606,7 +1606,7 @@ async def crawl_text_async(
     if cli_progress:
         cli_progress.close()
     
-    print(f"\n🎉 Extracted {found_count} JSON files to {out_folder}")
+    print(f"\n Extracted {found_count} JSON files to {out_folder}")
     
     # Create CSV file with extraction summary
     if saved_files:
@@ -1614,7 +1614,7 @@ async def crawl_text_async(
         csv_filename = f"extraction_summary_{timestamp}.csv"
         csv_path = os.path.join(out_folder, csv_filename)
         
-        print(f"\n📄 Creating extraction summary CSV: {csv_filename}")
+        print(f"\n Creating extraction summary CSV: {csv_filename}")
         
         try:
             with open(csv_path, 'w', newline='', encoding='utf-8') as csvfile:
@@ -1626,13 +1626,13 @@ async def crawl_text_async(
                     file_size_kb = os.path.getsize(file_path) / 1024 if os.path.exists(file_path) else 0
                     writer.writerow([idx, journal_name, article_name, publish_date, file_path, f"{file_size_kb:.2f}"])
             
-            logger.info(f"✅ CSV summary saved to: {csv_path}")
+            logger.info(f"CSV summary saved to: {csv_path}")
         except Exception as e:
-            logger.error(f"❌ Failed to create CSV summary: {e}")
+            logger.error(f" Failed to create CSV summary: {e}")
     
     # Zip all journal subfolders into one archive
     if saved_files:
-        print(f"\n📦 Creating ZIP archive with all extracted JSON files...")
+        print(f"\n Creating ZIP archive with all extracted JSON files...")
         
         zip_filename = f"all_journals_json_{timestamp}.zip"
         zip_path = os.path.join(out_folder, zip_filename)
@@ -1647,9 +1647,9 @@ async def crawl_text_async(
                     zipf.write(csv_path, os.path.basename(csv_path))
             
             zip_size_mb = os.path.getsize(zip_path) / (1024 * 1024)
-            logger.info(f"✅ Created ZIP archive: {zip_filename} ({zip_size_mb:.1f} MB)")
-            logger.info(f"📦 Archive contains {len(saved_files)} JSON files from {len(set(os.path.dirname(f) for f in saved_files))} journals")
+            logger.info(f"Created ZIP archive: {zip_filename} ({zip_size_mb:.1f} MB)")
+            logger.info(f"Archive contains {len(saved_files)} JSON files from {len(set(os.path.dirname(f) for f in saved_files))} journals")
         except Exception as e:
-            logger.error(f"❌ Failed to create ZIP archive: {e}")
+            logger.error(f" Failed to create ZIP archive: {e}")
     
     return saved_files, open_access_articles

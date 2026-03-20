@@ -2,7 +2,8 @@
 
 This module provides functions to extract plain text content from Nature.com
 article HTML pages, including title, authors, abstract, main text, figures,
-and references.
+and references. Supports both JSON extraction (from HTML) and PDF download
+(direct HTTP GET with redirect following).
 """
 from __future__ import annotations
 import asyncio
@@ -17,6 +18,7 @@ import zipfile
 from collections import deque
 from typing import Dict, List, Optional, Set, Tuple
 from urllib.parse import urljoin
+from urllib.request import Request, urlopen
 from datetime import datetime
 
 from bs4 import BeautifulSoup, Tag, NavigableString
@@ -26,10 +28,10 @@ from playwright_stealth import Stealth
 
 # Import CLIProgressTracker from crawler_async
 try:
-    from .crawler_async import CLIProgressTracker
+    from ..cell.crawl_cell_pdf_async import CLIProgressTracker
 except ImportError:
     # Fallback if relative import fails
-    from crawler_async import CLIProgressTracker
+    from src.papers_crawler.cell.crawl_cell_pdf_async import CLIProgressTracker
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +56,7 @@ async def discover_journals_nature_async(force_refresh: bool = False) -> List[Tu
         try:
             with open(cache_file, 'r', encoding='utf-8') as f:
                 cached_data = json.load(f)
-                print(f"📚 Loaded {len(cached_data)} Nature journals from cache")
+                print(f"Loaded {len(cached_data)} Nature journals from cache")
                 return [(j['slug'], j['name']) for j in cached_data]
         except Exception:
             pass
@@ -107,21 +109,21 @@ async def discover_journals_nature_async(force_refresh: bool = False) -> List[Tu
             
             await browser.close()
             
-            print(f"✅ Found {len(results)} Nature journals")
+            print(f"Found {len(results)} Nature journals")
             
             # Cache the results
             try:
                 cache_data = [{"slug": slug, "name": name} for slug, name in results]
                 with open(cache_file, 'w', encoding='utf-8') as f:
                     json.dump(cache_data, f, indent=2, ensure_ascii=False)
-                print(f"💾 Cached Nature journals to: {cache_file}")
+                print(f"Cached Nature journals to: {cache_file}")
             except Exception as e:
                 logger.warning(f"Failed to cache journals: {e}")
             
             return results
                 
     except Exception as e:
-        print(f"❌ Failed to discover journals from Nature.com: {e}")
+        print(f"Failed to discover journals from Nature.com: {e}")
         raise Exception(f"Could not load journals from Nature.com. Error: {str(e)}. Please check your internet connection and try again.")
 
 
@@ -143,7 +145,7 @@ async def extract_fulltext_nature_as_json(page: Page, fulltext_url: str) -> Opti
         Dict: JSON structure with sections as keys and content as values, or None if extraction fails
     """
     try:
-        logger.info(f"📖 Navigating to Nature article: {fulltext_url}")
+        logger.info(f"Navigating to Nature article: {fulltext_url}")
         await page.goto(fulltext_url, timeout=30000)
         await page.wait_for_timeout(2000)
         
@@ -292,7 +294,7 @@ async def extract_fulltext_nature_as_json(page: Page, fulltext_url: str) -> Opti
             return None
             
     except Exception as e:
-        logger.error(f"❌ Failed to extract Nature article: {e}")
+        logger.error(f" Failed to extract Nature article: {e}")
         logger.debug(traceback.format_exc())
         return None
 
@@ -310,11 +312,97 @@ async def save_json_to_file(json_content: Dict, file_path: str) -> bool:
     try:
         with open(file_path, 'w', encoding='utf-8') as f:
             json.dump(json_content, f, indent=2, ensure_ascii=False)
-        logger.info(f"💾 Saved JSON to: {file_path}")
+        logger.info(f"Saved JSON to: {file_path}")
         return True
     except Exception as e:
-        logger.error(f"❌ Failed to save JSON file: {e}")
+        logger.error(f" Failed to save JSON file: {e}")
         return False
+
+
+async def download_pdf_nature(article_url: str, pdf_out_folder: str) -> Optional[str]:
+    """Download a Nature article PDF via direct HTTP GET.
+    
+    Constructs the PDF URL from the article URL using the pattern:
+    https://www.nature.com/articles/<article-id>.pdf
+    
+    Follows redirects automatically and saves the file using the
+    filename from the server response (Content-Disposition or final URL).
+    
+    Args:
+        article_url: The article page URL (e.g. https://www.nature.com/articles/s41586-024-07238-x)
+        pdf_out_folder: Directory to save the downloaded PDF
+        
+    Returns:
+        str: Path to the saved PDF file, or None if download failed
+    """
+    try:
+        # Extract article ID from URL
+        # e.g. /articles/s41586-024-07238-x -> s41586-024-07238-x
+        match = re.search(r'/articles/([^/?#]+)', article_url)
+        if not match:
+            logger.error(f" Could not extract article ID from URL: {article_url}")
+            return None
+        
+        article_id = match.group(1)
+        pdf_url = f"https://www.nature.com/articles/{article_id}.pdf"
+        
+        logger.info(f"Downloading PDF from: {pdf_url}")
+        
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/115.0',
+            'Accept': 'application/pdf,application/octet-stream,*/*',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Connection': 'keep-alive',
+        }
+        
+        os.makedirs(pdf_out_folder, exist_ok=True)
+        
+        # Use urllib.request which follows redirects by default
+        req = Request(pdf_url, headers=headers)
+        
+        # Run the blocking HTTP request in a thread to keep async compatibility
+        loop = asyncio.get_event_loop()
+        response = await loop.run_in_executor(None, lambda: urlopen(req, timeout=60))
+        
+        pdf_data = await loop.run_in_executor(None, response.read)
+        
+        # Determine filename from Content-Disposition header or final URL
+        filename = None
+        content_disposition = response.headers.get('Content-Disposition', '')
+        if content_disposition:
+            cd_match = re.search(r'filename[*]?=["\']?([^"\';]+)', content_disposition)
+            if cd_match:
+                filename = cd_match.group(1).strip()
+        
+        if not filename:
+            # Use the final URL path as filename (after redirects)
+            final_url = response.url if hasattr(response, 'url') else pdf_url
+            final_path = str(final_url).split('/')[-1].split('?')[0]
+            if final_path and final_path.endswith('.pdf'):
+                filename = final_path
+            else:
+                filename = f"{article_id}.pdf"
+        
+        pdf_path = os.path.join(pdf_out_folder, filename)
+        
+        with open(pdf_path, 'wb') as f:
+            f.write(pdf_data)
+        
+        file_size_kb = os.path.getsize(pdf_path) / 1024
+        
+        if file_size_kb < 1:  # Less than 1KB is likely an error page
+            logger.error(f" Downloaded PDF is too small ({file_size_kb:.1f} KB): {pdf_path}")
+            os.remove(pdf_path)
+            return None
+        
+        logger.info(f"Saved PDF: {filename} ({file_size_kb:.1f} KB)")
+        print(f"PDF saved: {filename} ({file_size_kb:.1f} KB)", flush=True)
+        return pdf_path
+        
+    except Exception as e:
+        logger.error(f" Failed to download PDF for {article_url}: {e}")
+        logger.debug(traceback.format_exc())
+        return None
 
 
 async def crawl_text_nature_async(
@@ -328,11 +416,13 @@ async def crawl_text_nature_async(
     progress_callback=None,
     total_progress_callback=None,
     crawl_archives: bool = False,
+    pdf_out_folder: Optional[str] = None,
 ) -> Tuple[List[str], List[str]]:
     """Async crawl Nature.com for articles and extract full-text HTML as plain text.
     
     Crawls Nature.com journals' research articles pages and extracts open access
-    articles within the specified year range.
+    articles within the specified year range. Supports both JSON extraction
+    (from HTML) and PDF download (direct HTTP).
     
     Args:
         keywords: Search keywords (currently unused, reserved for future)
@@ -345,12 +435,15 @@ async def crawl_text_nature_async(
         progress_callback: Called with (filename, filepath) after each file is saved
         total_progress_callback: Called with (current, total, status, file_size, speed, stage)
         crawl_archives: If True, also crawl archive pages for older articles
+        pdf_out_folder: If provided, also download PDFs to this directory
     
     Returns:
         Tuple[List[str], List[str]]: (saved_file_paths, open_access_article_names)
     """
     
     os.makedirs(out_folder, exist_ok=True)
+    if pdf_out_folder:
+        os.makedirs(pdf_out_folder, exist_ok=True)
     saved_files = []
     open_access_articles = []
     article_metadata = []
@@ -397,26 +490,26 @@ async def crawl_text_nature_async(
 
     found_count = 0
 
-    print(f"🔍 Nature.com crawler initialized")
-    print(f"📂 Output folder: {out_folder}")
-    print(f"📅 Year range: {year_from} - {year_to}")
+    print(f"Nature.com crawler initialized")
+    print(f"Output folder: {out_folder}")
+    print(f"Year range: {year_from} - {year_to}")
     
     if journal_slugs:
-        print(f"📚 Target journals: {', '.join(journal_slugs)}")
+        print(f"Target journals: {', '.join(journal_slugs)}")
         
         if total_progress_callback:
             total_progress_callback(0, 0, "Scanning Nature journals for open access articles...", 0, 0, "scanning")
         elif cli_progress:
-            print(f"🔍 Scanning {len(journal_slugs)} Nature journal(s) for open access articles...", flush=True)
+            print(f"Scanning {len(journal_slugs)} Nature journal(s) for open access articles...", flush=True)
         
         async with async_playwright() as p:
             for slug in journal_slugs:
-                print(f"\n📚 Crawling journal: {slug}", flush=True)
-                journal_folder = os.path.join(out_folder, slug)
+                print(f"\n Crawling journal: {slug}", flush=True)
+                journal_folder = out_folder
                 os.makedirs(journal_folder, exist_ok=True)
                 
                 # Launch browser for this journal
-                print(f"🚀 Launching Firefox for journal: {slug}...", flush=True)
+                print(f"Launching Firefox for journal: {slug}...", flush=True)
                 browser = await p.firefox.launch(headless=headless)
                 context = await browser.new_context(
                     user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/115.0"
@@ -424,8 +517,8 @@ async def crawl_text_nature_async(
                 await stealth.apply_stealth_async(context)
                 page = await context.new_page()
                 
-                print(f"✅ Firefox browser ready for {slug}", flush=True)
-                print(f"📂 Journal folder: {journal_folder}", flush=True)
+                print(f"Firefox browser ready for {slug}", flush=True)
+                print(f"Journal folder: {journal_folder}", flush=True)
                 
                 # Navigate to research articles page with pagination support
                 # Loop through each year for efficient server-side filtering
@@ -441,7 +534,7 @@ async def crawl_text_nature_async(
                             print(f"✋ Reached limit of {limit} articles", flush=True)
                             break
                         
-                        print(f"\n📅 Crawling year: {year}", flush=True)
+                        print(f"\n Crawling year: {year}", flush=True)
                         page_num = 1
                         
                         # Pagination loop for current year
@@ -457,7 +550,7 @@ async def crawl_text_nature_async(
                             else:
                                 articles_url = f"{base_articles_url}?searchType=journalSearch&sort=PubDate&year={year}&page={page_num}"
                             
-                            print(f"📖 Loading page {page_num}: {articles_url}", flush=True)
+                            print(f"Loading page {page_num}: {articles_url}", flush=True)
                             
                             await page.goto(articles_url, timeout=30000)
                             await page.wait_for_timeout(3000)
@@ -473,10 +566,10 @@ async def crawl_text_nature_async(
                             articles = soup.find_all("article", {"class": "c-card", "itemtype": "http://schema.org/ScholarlyArticle"})
                             
                             if not articles:
-                                print(f"📭 No more articles found on page {page_num}", flush=True)
+                                print(f"No more articles found on page {page_num}", flush=True)
                                 break
                             
-                            print(f"📄 Found {len(articles)} articles on page {page_num}", flush=True)
+                            print(f"Found {len(articles)} articles on page {page_num}", flush=True)
                             
                             page_oa_found = 0  # Track OA articles found on this specific page
                             for art in articles:
@@ -530,11 +623,11 @@ async def crawl_text_nature_async(
                                 
                                 oa_count += 1
                                 page_oa_found += 1
-                                print(f"📄 Found open-access article ({article_year}): {article_title[:60]}...", flush=True)
+                                print(f"Found open-access article ({article_year}): {article_title[:60]}...", flush=True)
                                 
                                 try:
                                     # Extract full-text content from the article page
-                                    print(f"📖 Extracting full-text from: {full_url}", flush=True)
+                                    print(f"Extracting full-text from: {full_url}", flush=True)
                                     json_data = await extract_fulltext_nature_as_json(page, full_url)
                                     
                                     if not json_data:
@@ -561,12 +654,21 @@ async def crawl_text_nature_async(
                                         if progress_callback:
                                             progress_callback(json_filename, json_path)
                                         
-                                        print(f"✅ Saved: {json_filename}", flush=True)
+                                        print(f"Saved JSON: {json_filename}", flush=True)
+                                    
+                                    # Download PDF if pdf_out_folder is specified
+                                    if pdf_out_folder:
+                                        pdf_journal_folder = pdf_out_folder
+                                        pdf_path = await download_pdf_nature(full_url, pdf_journal_folder)
+                                        if pdf_path:
+                                            print(f"Saved PDF for: {article_title[:60]}", flush=True)
+                                        else:
+                                            logger.warning(f" PDF download failed for: {article_title[:60]}")
                                     else:
                                         logger.error(f"Failed to save JSON for: {article_title}")
                                 
                                 except Exception as e:
-                                    logger.error(f"❌ Error processing article {article_title}: {e}")
+                                    logger.error(f" Error processing article {article_title}: {e}")
                                     logger.debug(traceback.format_exc())
                                 
                                 # Brief delay between articles
@@ -580,26 +682,26 @@ async def crawl_text_nature_async(
                             
                             # Just log if no OA articles found, but continue to next page
                             if page_oa_found == 0:
-                                print(f"📭 No open access articles found on page {page_num} for year {year}, continuing to next page...", flush=True)
+                                print(f"No open access articles found on page {page_num} for year {year}, continuing to next page...", flush=True)
                             
                             # Move to next page
                             page_num += 1
-                            print(f"➡️  Moving to page {page_num} for year {year}...", flush=True)
+                            print(f"Moving to page {page_num} for year {year}...", flush=True)
                     
-                    print(f"📚 Found {oa_count} open access articles in {slug} (filtered by year {year_from}-{year_to})", flush=True)
+                    print(f"Found {oa_count} open access articles in {slug} (filtered by year {year_from}-{year_to})", flush=True)
                     
                 except Exception as e:
-                    logger.error(f"❌ Failed to crawl journal {slug}: {e}")
+                    logger.error(f" Failed to crawl journal {slug}: {e}")
                     logger.debug(traceback.format_exc())
                 
                 finally:
-                    print(f"🔒 Closing browser for journal: {slug}", flush=True)
+                    print(f"Closing browser for journal: {slug}", flush=True)
                     await browser.close()
     
     if cli_progress:
         cli_progress.close()
     
-    print(f"\n🎉 Extracted {found_count} JSON files to {out_folder}")
+    print(f"\n Extracted {found_count} JSON files to {out_folder}")
     
     # Create CSV summary and ZIP archive
     if saved_files:
@@ -609,7 +711,7 @@ async def crawl_text_nature_async(
         csv_filename = f"extraction_summary_{timestamp}.csv"
         csv_path = os.path.join(out_folder, csv_filename)
 
-        print(f"\n📄 Creating extraction summary CSV: {csv_filename}")
+        print(f"\n Creating extraction summary CSV: {csv_filename}")
 
         try:
             import csv
@@ -622,12 +724,12 @@ async def crawl_text_nature_async(
                     file_size_kb = os.path.getsize(file_path) / 1024 if os.path.exists(file_path) else 0
                     writer.writerow([idx, journal_name, article_name, publish_date, file_path, f"{file_size_kb:.2f}"])
 
-            logger.info(f"✅ CSV summary saved to: {csv_path}")
+            logger.info(f"CSV summary saved to: {csv_path}")
         except Exception as e:
-            logger.error(f"❌ Failed to create CSV summary: {e}")
+            logger.error(f" Failed to create CSV summary: {e}")
 
         # ZIP archive
-        print(f"\n📦 Creating ZIP archive with all extracted JSON files...")
+        print(f"\n Creating ZIP archive with all extracted JSON files...")
 
         zip_filename = f"all_nature_journals_json_{timestamp}.zip"
         zip_path = os.path.join(out_folder, zip_filename)
@@ -639,9 +741,9 @@ async def crawl_text_nature_async(
                     zipf.write(file_path, arcname)
 
             zip_size_mb = os.path.getsize(zip_path) / (1024 * 1024)
-            logger.info(f"✅ Created ZIP archive: {zip_filename} ({zip_size_mb:.1f} MB)")
+            logger.info(f"Created ZIP archive: {zip_filename} ({zip_size_mb:.1f} MB)")
         except Exception as e:
-            logger.error(f"❌ Failed to create ZIP archive: {e}")
+            logger.error(f" Failed to create ZIP archive: {e}")
     
     return saved_files, open_access_articles
 
@@ -685,12 +787,12 @@ async def crawl_titles_nature_async(
     oa_articles: List[Dict] = []
 
     if not journal_slugs:
-        print("⚠️  No journal slugs provided – nothing to crawl.", flush=True)
+        print("  No journal slugs provided – nothing to crawl.", flush=True)
         return all_articles, oa_articles
 
-    print(f"🔍 Nature.com title crawler – collecting ALL article titles (OA + fee)")
-    print(f"📅 Year range: {year_from} – {year_to}")
-    print(f"📚 Journals: {', '.join(journal_slugs)}")
+    print(f"Nature.com title crawler – collecting ALL article titles (OA + fee)")
+    print(f"Year range: {year_from} – {year_to}")
+    print(f"Journals: {', '.join(journal_slugs)}")
 
     stealth = Stealth(
         navigator_languages_override=("en-US", "en"),
@@ -723,7 +825,7 @@ async def crawl_titles_nature_async(
             if limit and found_count >= limit:
                 break
 
-            print(f"\n📚 Scanning journal: {slug}", flush=True)
+            print(f"\n Scanning journal: {slug}", flush=True)
             base_url = f"https://www.nature.com/{slug}/research-articles"
 
             browser = await p.firefox.launch(headless=headless)
@@ -738,7 +840,7 @@ async def crawl_titles_nature_async(
                     if limit and found_count >= limit:
                         break
 
-                    print(f"  📅 Year {year}", flush=True)
+                    print(f"Year {year}", flush=True)
                     page_num = 1
                     first_page = True
 
@@ -751,7 +853,7 @@ async def crawl_titles_nature_async(
                         else:
                             url = f"{base_url}?searchType=journalSearch&sort=PubDate&year={year}&page={page_num}"
 
-                        await page.goto(url, timeout=30000)
+                        await page.goto(url, timeout=60000)
                         await page.wait_for_timeout(3000)
 
                         if first_page:
@@ -770,10 +872,10 @@ async def crawl_titles_nature_async(
                         )
 
                         if not articles:
-                            print(f"  📭 No more articles on page {page_num} for {year}", flush=True)
+                            print(f"No more articles on page {page_num} for {year}", flush=True)
                             break
 
-                        print(f"  📄 Page {page_num}: {len(articles)} articles", flush=True)
+                        print(f"Page {page_num}: {len(articles)} articles", flush=True)
 
                         for art in articles:
                             if limit and found_count >= limit:
@@ -827,8 +929,8 @@ async def crawl_titles_nature_async(
                                 oa_articles.append(record)
                             found_count += 1
 
-                            oa_marker = "🔓 OA" if is_oa else "🔒 fee"
-                            print(f"    {oa_marker}  {article_title[:70]}", flush=True)
+                            oa_marker = "🔓 OA" if is_oa else " fee"
+                            print(f" {oa_marker}  {article_title[:70]}", flush=True)
 
                             if progress_callback:
                                 progress_callback(article_title, is_oa)
@@ -836,13 +938,13 @@ async def crawl_titles_nature_async(
                         page_num += 1
 
             except Exception as e:
-                logger.error(f"❌ Failed to scan journal {slug}: {e}")
+                logger.error(f" Failed to scan journal {slug}: {e}")
                 logger.debug(traceback.format_exc())
             finally:
                 await browser.close()
 
     print(
-        f"\n✅ Collected {len(all_articles)} total titles "
+        f"\n Collected {len(all_articles)} total titles "
         f"({len(oa_articles)} OA, {len(all_articles) - len(oa_articles)} fee-based)",
         flush=True,
     )
