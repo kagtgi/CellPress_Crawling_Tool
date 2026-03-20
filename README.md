@@ -115,24 +115,33 @@ python -m papers_crawler.cell.crawl_cell --journal-slugs cell immunity \
 Crawl Nature.com open-access papers for PDFs and structured full-text JSON.
 
 ```bash
+# Example 1: By journal slugs
 python -m papers_crawler.nature.crawl_nature --journal-slugs nature-medicine nature-immunology \
     --year-from 2024 --year-to 2025 \
     --pdf-output ./data/pdfs \
     --json-output ./data/json \
     --max-papers 50
+
+# Example 2: By input file (CSV, Excel, or JSONL containing a "url" column/field)
+python -m papers_crawler.nature.crawl_nature --use-input-file y \
+    --input-file ./input.csv \
+    --pdf-output ./data/pdfs \
+    --json-output ./data/json
 ```
 
 **Parameters:**
 
-- `--journal-slugs`: (Required) Space-separated journal identifiers. Find a slug in the journal's Nature.com URL (e.g., `https://www.nature.com/nm/` maps to `nature-medicine`). Alternatively, use the `discover_journals_nature_async()` API.
+- `--journal-slugs`: (Required unless using input file) Space-separated journal identifiers. Find a slug in the journal's Nature.com URL (e.g., `https://www.nature.com/nm/` maps to `nature-medicine`). Alternatively, use the `discover_journals_nature_async()` API.
+- `--use-input-file`: Set to `y` to crawl from a list of URLs instead of journals parameters.
+- `--input-file`: Path to the input CSV/Excel/JSONL file containing a `url` column (used when `--use-input-file y`).
 - `--year-from`, `--year-to`: Start and end year filter for crawling.
 - `--pdf-output`, `--json-output`: Output directories for downloaded content.
 - `--max-papers`: Maximum number of papers per journal.
 
 **Output:**
 
-- Downloaded open-access PDFs in `./data/pdfs/<slug>/`
-- Extracted JSON text in `./data/json/<slug>/Article_Title_YYYY.json`
+- Downloaded open-access PDFs in `./data/pdfs/<slug>/` or `./data/pdfs/` (if using input file).
+- Extracted JSON text in `./data/json/<slug>/Article_Title_YYYY.json` or `./data/json/<Article_ID>.json` (if using input file).
 
 ### 3. PubMed Crawler
 
