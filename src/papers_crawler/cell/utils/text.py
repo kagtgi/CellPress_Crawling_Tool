@@ -1,0 +1,949 @@
+import re
+import logging
+import traceback
+from typing import Dict, List, Optional, Set, Tuple
+from collections import deque
+from datetime import datetime
+from bs4 import BeautifulSoup, Tag, NavigableString
+from playwright.async_api import Page
+
+logger = logging.getLogger(__name__)
+
+async def extract_fulltext_as_json(page: Page, fulltext_url: str) -> Optional[Dict]:
+    """Navigate to full-text HTML page and extract all text content as JSON.
+    
+    Extracts all content from the article including:
+    - Header section (title, authors, affiliations, dates)
+    - Introduction and all article sections
+    - All headings (h1, h2, h3, h4, h5, h6) and paragraphs
+    - Figure captions
+    - References
+    
+    Focuses on content within <article> > <div data-core-wrapper="header"> 
+    and <div data-core-wrapper="content"> for comprehensive extraction.
+    
+    Args:
+        page: Playwright page object for navigation
+        fulltext_url: URL of the full-text HTML page
+        
+    Returns:
+        Dict: JSON structure with sections as keys and content as values, or None if extraction fails
+    """
+    try:
+        logger.info(f"Navigating to full-text page: {fulltext_url}")
+        await page.goto(fulltext_url, timeout=30000)
+        await page.wait_for_timeout(2000)
+        
+        html = await page.content()
+        soup = BeautifulSoup(html, "html.parser")
+        
+        # Remove UI elements, buttons, and navigation that are not article content
+        for unwanted in soup.find_all(['button', 'nav', 'script', 'style', 'iframe', 'aside']):
+            unwanted.decompose()
+        
+        # Remove specific UI classes that contain "show more/less" and other UI elements
+        ui_classes = ['show-more', 'show-less', 'expand', 'collapse', 'toggle', 'button', 
+                      'nav', 'menu', 'footer', 'sidebar', 'advertisement',
+                      'social-share', 'download-link', 'metrics', 'altmetric']
+        for ui_class in ui_classes:
+            for elem in soup.find_all(class_=lambda x: x and ui_class in x.lower()):
+                elem.decompose()
+        
+        # JSON structure to store sections
+        json_data = {}
+        current_section = "header"  # Start with header
+        current_section_parts = []
+        section_stack = [(current_section, current_section_parts)]  # Stack for nested sections
+        
+        text_parts = []  # Keep for compatibility with existing functions
+        recent_lines = deque(maxlen=60)
+
+        references_section = soup.find("section", id="references")
+        footnote_map: Dict[str, str] = {}
+        footnote_in_refs: Dict[str, bool] = {}
+        footnote_elements: Set[Tag] = set()
+        pending_bullet_prefix: Optional[str] = None
+
+        heading_tags = ("h1", "h2", "h3", "h4", "h5", "h6")
+        skip_names = {"script", "style", "svg", "noscript", "form", "hr", "iframe"}
+        indent_step = 2
+        max_indent = 12
+        container_keywords = (
+            "core-container",
+            "section",
+            "subsection",
+            "article__section",
+            "article-section",
+            "body-section",
+            "content-block"
+        )
+        unwanted_phrases = [
+            "search for articles by this author",
+            "crossref",
+            "scopus",
+            "google scholar",
+            "show more",
+            "show less",
+            "supplementary material",
+            "supplementary information",
+            "metrics",
+            "copyright",
+            "licence",
+            "license"
+        ]
+
+        reference_skip_phrases = (
+            "full text",
+            "full text (pdf)",
+            "pdf",
+            "crossref",
+            "scopus",
+            "pubmed",
+            "google scholar",
+            "open table in a new tab",
+            "view abstract",
+            "supplementary information",
+        )
+
+        def clean_reference_entry(tag: Tag) -> str:
+            fragments: List[str] = []
+            for string in tag.stripped_strings:
+                fragment = clean_text(str(string))
+                if not fragment:
+                    continue
+                lower_fragment = fragment.lower()
+                if any(phrase in lower_fragment for phrase in reference_skip_phrases):
+                    continue
+                fragments.append(fragment)
+            if not fragments:
+                return ""
+            combined = " ".join(fragments)
+            combined = re.sub(r"\s+", " ", combined).strip()
+            combined = re.sub(r"^\d+(\.|:)?\s*", "", combined)
+            combined = combined.replace(" ,", ",")
+            return combined
+
+        def mark_footnote_elements(container: Tag) -> None:
+            footnote_elements.add(container)
+            for descendant in container.descendants:
+                if isinstance(descendant, Tag):
+                    footnote_elements.add(descendant)
+
+        def reference_sort_key(identifier: str) -> Tuple[int, str]:
+            match = re.search(r"(\d+)", identifier)
+            if match:
+                return int(match.group(1)), identifier
+            return 10**6, identifier
+
+        def normalize_identifier(value: Optional[str]) -> str:
+            if not value:
+                return ""
+            normalized = str(value).strip().lower()
+            if normalized.startswith("#"):
+                normalized = normalized[1:]
+            normalized = re.sub(r"\s+", "", normalized)
+            return normalized
+
+        def split_identifier_values(raw_value) -> List[str]:
+            if not raw_value:
+                return []
+            if isinstance(raw_value, (list, tuple, set)):
+                collected: List[str] = []
+                for item in raw_value:
+                    collected.extend(split_identifier_values(item))
+                return collected
+            value = str(raw_value).strip()
+            if not value:
+                return []
+            if value.startswith("#"):
+                value = value[1:]
+            if value.startswith("http") and "#" in value:
+                value = value.split("#", 1)[1]
+            parts = re.split(r"[\s,;]+", value)
+            return [part for part in parts if part]
+
+        def extract_candidate_ids(element: Optional[Tag]) -> List[str]:
+            if not element:
+                return []
+            attributes = (
+                "id",
+                "name",
+                "href",
+                "data-rid",
+                "data-ref",
+                "data-reference",
+                "data-footnote-id",
+                "data-id",
+                "data-target",
+                "data-uuid",
+                "data-bib",
+                "data-bib-id",
+                "data-citation-id",
+                "data-annotation-id",
+            )
+            identifiers: List[str] = []
+            for attr in attributes:
+                raw = element.get(attr)
+                if attr == "href" and raw and "#" in str(raw):
+                    raw = str(raw).split("#", 1)[1]
+                elif attr == "href":
+                    continue
+                values = split_identifier_values(raw)
+                identifiers.extend(values)
+            return identifiers
+
+        def build_footnote_map() -> None:
+            selectors = [
+                'a[id^="bib"]',
+                'a[id^="ref"]',
+                'a[name^="bib"]',
+                'a[name^="ref"]',
+                '[id^="bib"]',
+                '[id^="ref"]',
+                'li.reference',
+                'li.bibliography__item',
+            ]
+            seen_ids: Set[str] = set()
+            for selector in selectors:
+                for candidate in soup.select(selector):
+                    fid = candidate.get("id") or candidate.get("name")
+                    if not fid:
+                        anchor = candidate.find("a", id=True) or candidate.find("a", attrs={"name": True})
+                        if anchor:
+                            fid = anchor.get("id") or anchor.get("name")
+                    if not fid:
+                        candidates = extract_candidate_ids(candidate)
+                        if not candidates:
+                            continue
+                        ids_to_process = candidates
+                    else:
+                        ids_to_process = [fid]
+                    normalized_ids = [normalize_identifier(value) for value in ids_to_process if value]
+                    normalized_ids = [value for value in normalized_ids if value]
+                    if not normalized_ids:
+                        continue
+                    container = candidate
+                    if container.name in {"a", "span", "sup"}:
+                        parent_candidate = container.find_parent(['li', 'div', 'section', 'p'])
+                        if parent_candidate:
+                            container = parent_candidate
+                    text = clean_reference_entry(container)
+                    if not text:
+                        continue
+                    in_refs = bool(references_section and references_section in container.parents)
+                    for normalized_id in normalized_ids:
+                        if normalized_id in seen_ids:
+                            continue
+                        footnote_map[normalized_id] = text
+                        footnote_in_refs[normalized_id] = in_refs
+                        seen_ids.add(normalized_id)
+                    if not in_refs:
+                        mark_footnote_elements(container)
+
+        def get_reference_entries() -> List[str]:
+            entries: List[str] = []
+            seen_text: Set[str] = set()
+            if references_section:
+                # Try to find list items first (most common structure)
+                candidates = references_section.find_all('li', recursive=False)
+                
+                # Also look for div[role="listitem"] (Cell Press format)
+                if not candidates:
+                    candidates = references_section.find_all('div', {'role': 'listitem'})
+                
+                if not candidates:
+                    # Fallback: find direct children that are divs or paragraphs
+                    candidates = [child for child in references_section.children 
+                                 if isinstance(child, Tag) and child.name in {'div', 'p'}]
+                
+                for candidate in candidates:
+                    text = clean_reference_entry(candidate)
+                    lower_text = text.lower()
+                    if not text or lower_text in seen_text:
+                        continue
+                    seen_text.add(lower_text)
+                    entries.append(text)
+                if entries:
+                    return entries
+            if footnote_map:
+                ordered_ids = sorted(
+                    (fid for fid, in_refs in footnote_in_refs.items() if in_refs),
+                    key=reference_sort_key
+                )
+                for fid in ordered_ids:
+                    text = footnote_map.get(fid)
+                    if not text:
+                        continue
+                    lower_text = text.lower()
+                    if lower_text in seen_text:
+                        continue
+                    seen_text.add(lower_text)
+                    entries.append(text)
+                if entries:
+                    return entries
+                for text in footnote_map.values():
+                    lower_text = text.lower()
+                    if lower_text in seen_text or not text:
+                        continue
+                    seen_text.add(lower_text)
+                    entries.append(text)
+            return entries
+
+        def collect_inline_footnotes(container: Tag) -> List[str]:
+            if not footnote_map:
+                return []
+            collected: List[str] = []
+            seen_ids: Set[str] = set()
+            for sup in container.find_all("sup"):
+                candidate_ids = extract_candidate_ids(sup)
+                if not candidate_ids:
+                    for anchor in sup.find_all("a"):
+                        candidate_ids.extend(extract_candidate_ids(anchor))
+                for candidate_id in candidate_ids:
+                    normalized = normalize_identifier(candidate_id)
+                    if not normalized or normalized in seen_ids:
+                        continue
+                    if footnote_in_refs.get(normalized):
+                        continue
+                    note_text = footnote_map.get(normalized)
+                    if not note_text:
+                        continue
+                    seen_ids.add(normalized)
+                    collected.append(note_text)
+            return collected
+
+        def extract_text_with_refs(element):
+            """Recursively extract text, inserting (Ref: N) where citations appear.
+            Handles superscripts properly (no space before +, -, etc.)
+            Groups consecutive references like (Ref: 1, 2, 3) instead of (Ref: 1), (Ref: 2), (Ref: 3)
+            """
+            parts = []
+            pending_refs = []  # Collect consecutive reference numbers
+            
+            def flush_refs():
+                """Output collected references as a single (Ref: X, Y, Z) annotation."""
+                nonlocal pending_refs
+                if pending_refs:
+                    parts.append(f" (Ref: {', '.join(pending_refs)})")
+                    pending_refs = []
+            
+            for child in element.children:
+                if isinstance(child, NavigableString):
+                    text = str(child)
+                    # Skip whitespace-only text between references
+                    if text.strip():
+                        # Flush any pending refs before adding text
+                        flush_refs()
+                        parts.append(text)
+                    # Don't flush refs for whitespace - might be between citations
+                
+                elif isinstance(child, Tag):
+                    # Skip dropdown citation blocks
+                    if child.name == "div" and "dropBlock__holder" in child.get("class", []):
+                        continue
+                    
+                    # Handle reference citations - collect for grouping
+                    if child.name == "a" and child.get("role") == "doc-biblioref":
+                        # Extract reference number from sup tag
+                        sup = child.find("sup")
+                        if sup:
+                            ref_num = sup.get_text(strip=True)
+                            pending_refs.append(ref_num)
+                        continue
+                    
+                    # Handle sup/sub tags (separators or other superscripts)
+                    if child.name in {"sup", "sub"}:
+                        # Check if this is a separator between references
+                        sup_text = child.get_text(strip=True)
+                        if sup_text in {",", ";", "and", "&", "–", "-"}:
+                            # It's a separator between refs, keep collecting
+                            continue
+                        
+                        # Check if this is NOT a reference citation (those are handled above)
+                        parent_is_ref = child.parent.name == "a" and child.parent.get("role") == "doc-biblioref"
+                        if not parent_is_ref:
+                            # Flush pending refs before adding superscript
+                            flush_refs()
+                            if sup_text:
+                                parts.append(sup_text)
+                        continue
+                    
+                    # Skip other inline formatting tags but process their children
+                    if child.name in {"span", "strong", "em", "i", "b"}:
+                        # Peek at child content to see if it's just a separator
+                        child_parts = extract_text_with_refs(child)
+                        # Check if child contains only separators (comma, semicolon, etc.)
+                        child_text = "".join(str(p) for p in child_parts).strip()
+                        if child_text in {",", ";", "and", "&", "–", "-"}:
+                            # It's a separator, keep collecting refs
+                            continue
+                        elif child_text:
+                            # Not a separator and has content, flush refs
+                            flush_refs()
+                            parts.extend(child_parts)
+                        # If empty, skip it
+                        continue
+                    
+                    # For other tags, flush refs and recurse
+                    flush_refs()
+                    parts.extend(extract_text_with_refs(child))
+            
+            # Flush any remaining refs at the end
+            flush_refs()
+            return parts
+
+        def clean_text(value: str) -> str:
+            if not value:
+                return ""
+            # Preserve inline superscripts but normalize whitespace
+            text = re.sub(r"\s+", " ", value).strip()
+            return text
+
+        def should_skip_text(text: str) -> bool:
+            if not text:
+                return True
+            stripped = text.strip()
+            lower = stripped.lower()
+            if lower.startswith("/* lines") and lower.endswith(" omitted */"):
+                return True
+            if any(phrase in lower for phrase in unwanted_phrases):
+                return True
+            if stripped in {"•", "·"}:
+                return False
+            if len(lower) <= 2 and not any(ch.isalpha() for ch in lower):
+                return True
+            if lower in {"…", "...", "∙"}:
+                return True
+            return False
+
+        def ensure_paragraph_break() -> None:
+            if not text_parts:
+                return
+            last = text_parts[-1]
+            if last == "\n" or last.endswith("\n\n"):
+                return
+            text_parts.append("\n")
+
+        def append_line(text: str, indent: int = 0, allow_repeat: bool = False) -> None:
+            nonlocal pending_bullet_prefix, current_section_parts
+            cleaned = clean_text(text)
+            if not cleaned:
+                return
+            stripped = cleaned.strip()
+            if stripped in {"•", "·"}:
+                pending_bullet_prefix = f"{' ' * indent}• "
+                return
+            if stripped in {"+", "-", "−"} and text_parts:
+                updated = text_parts[-1].rstrip("\n") + f" {stripped}\n"
+                text_parts[-1] = updated
+                recent_lines.append(clean_text(updated.strip()))
+                return
+            if should_skip_text(cleaned):
+                return
+            if indent and not pending_bullet_prefix:
+                cleaned = f"{' ' * indent}{cleaned}"
+            if pending_bullet_prefix:
+                cleaned = pending_bullet_prefix + cleaned
+                pending_bullet_prefix = None
+            dedup_key = clean_text(cleaned)
+            if not allow_repeat and dedup_key in recent_lines:
+                return
+            recent_lines.append(dedup_key)
+            
+            # Add to current section
+            current_section_parts.append(f"{cleaned}\n")
+            text_parts.append(f"{cleaned}\n")
+
+        def append_heading(level: int, text: str) -> None:
+            nonlocal current_section, current_section_parts, section_stack
+            heading_text = clean_text(text)
+            if should_skip_text(heading_text):
+                return
+            level = max(1, min(level, 6))
+            ensure_paragraph_break()
+            
+            # For top-level headings (h1, h2), start a new section
+            if level <= 2:
+                # Save current section
+                if current_section_parts:
+                    section_content = "".join(current_section_parts).strip()
+                    if section_content:
+                        json_data[current_section] = section_content
+                
+                # Start new section
+                current_section = heading_text.lower().replace(" ", "_").replace("★", "")
+                current_section_parts = []
+            else:
+                # For subsections, append as part of current section with markdown
+                current_section_parts.append(f"{'#' * level} {heading_text}\n\n")
+            
+            text_parts.append(f"{'#' * level} {heading_text}\n")
+            text_parts.append("\n")
+
+        def append_list(list_tag: Tag, indent: int) -> None:
+            items = [child for child in list_tag.find_all("li", recursive=False)]
+            if not items:
+                return
+
+            for idx, item in enumerate(items, 1):
+                bullet = f"{idx}. " if list_tag.name == "ol" else "- "
+                
+                # Collect all text including superscripts inline using extract_text_with_refs
+                text_parts = extract_text_with_refs(item)
+                full_text = "".join(text_parts).strip()
+                full_text = re.sub(r' +', ' ', full_text)
+                
+                # Remove nested list text temporarily
+                nested_lists = item.find_all(["ul", "ol"], recursive=False)
+                for nested in nested_lists:
+                    nested_parts = extract_text_with_refs(nested)
+                    nested_text = "".join(nested_parts).strip()
+                    full_text = full_text.replace(nested_text, "")
+                
+                full_text = clean_text(full_text)
+                
+                if full_text:
+                    append_line(f"{bullet}{full_text}", indent=indent, allow_repeat=True)
+                else:
+                    append_line(bullet.strip(), indent=indent, allow_repeat=True)
+
+                # Process nested lists
+                for nested in nested_lists:
+                    append_list(nested, min(indent + indent_step, max_indent))
+
+            ensure_paragraph_break()
+
+        def append_table(table_tag: Tag, indent: int) -> None:
+            nonlocal current_section_parts
+            rows = []
+            for tr in table_tag.find_all("tr"):
+                cells = []
+                for cell in tr.find_all(["th", "td"]):
+                    # Use extract_text_with_refs for proper superscript/reference handling
+                    cell_parts = extract_text_with_refs(cell)
+                    cell_text = "".join(cell_parts).strip()
+                    # Normalize whitespace and clean up the text
+                    cell_text = re.sub(r'\s+', ' ', cell_text)
+                    cell_text = re.sub(r'\s*\|\s*', ' ', cell_text)  # Remove any pipe characters from cell content
+                    cells.append(cell_text)
+                if any(cell for cell in cells):
+                    rows.append(cells)
+
+            if not rows:
+                return
+
+            # Add table marker to both text_parts and current_section_parts
+            text_parts.append("\n")
+            text_parts.append("[Table]\n")
+            current_section_parts.append("\n")
+            current_section_parts.append("[Table]\n")
+            
+            # Output each row on its own line
+            for row in rows:
+                # Join cells with pipe separator
+                line = " | ".join(row)
+                if line.strip():
+                    text_parts.append(line + "\n")
+                    current_section_parts.append(line + "\n")
+            
+            text_parts.append("\n")
+            current_section_parts.append("\n")
+
+        def append_content(node, indent: int = 0) -> None:
+            if isinstance(node, NavigableString):
+                text = clean_text(str(node))
+                append_line(text, indent=indent)
+                return
+
+            if not isinstance(node, Tag):
+                return
+
+            name = node.name.lower()
+
+            if node in footnote_elements:
+                return
+
+            if name in skip_names:
+                return
+
+            if node.get("aria-hidden") == "true":
+                return
+
+            node_id = (node.get("id") or "").lower()
+            if node_id == "references":
+                return
+
+            # Handle figures - but extract tables if they're inside
+            if name == "figure" or (node.get("data-component") or "").lower() == "figure":
+                # Check if this figure contains a table (search all descendants)
+                table = node.find("table", recursive=True)
+                if table:
+                    append_table(table, indent)
+                return
+
+            classes = [cls.lower() for cls in node.get("class", [])]
+            
+            # Handle div.figure-wrap which may contain tables
+            if any("figure-wrap" in cls for cls in classes):
+                table = node.find("table", recursive=True)
+                if table:
+                    append_table(table, indent)
+                return
+            
+            if any("figure" in cls for cls in classes):
+                # Check if this element contains a table (search all descendants)
+                table = node.find("table", recursive=True)
+                if table:
+                    append_table(table, indent)
+                return
+            if any("sidebar" in cls for cls in classes):
+                return
+            
+            # Skip standalone footnote blocks (we handle them inline)
+            if name in {"aside", "div", "section"} and any("footnote" in cls for cls in classes):
+                return
+
+            # Skip inline elements like sup, sub, span - they're handled by parent
+            if name in {"sup", "sub", "span", "a", "strong", "em", "i", "b"}:
+                return
+
+            if name == "br":
+                # Don't break on <br> inside inline elements - just treat as space
+                return
+
+            if name in heading_tags:
+                # Extract heading text with proper superscript handling
+                text_parts = extract_text_with_refs(node)
+                heading_text = "".join(text_parts)
+                heading_text = re.sub(r' +', ' ', heading_text).strip()
+                if heading_text:
+                    append_heading(min(int(name[1]), 6), heading_text)
+                return
+
+            # Check for role="paragraph" attribute
+            role_attr = (node.get("role") or "").lower()
+            
+            # Skip doc-footnotes
+            if role_attr == "doc-footnote":
+                return
+            
+            # Handle paragraphs and blockquotes
+            # BUT: Skip paragraph handling if this element contains a table - let it process children normally
+            if name in {"p", "blockquote"} or role_attr == "paragraph":
+                # Check if this paragraph contains a table (anywhere in descendants)
+                if node.find("table", recursive=True):
+                    # This paragraph contains a table, so process children normally instead
+                    pass  # Fall through to child processing
+                else:
+                    # Normal paragraph - extract text with inline references
+                    text_parts = extract_text_with_refs(node)
+                    
+                    # Join and normalize whitespace
+                    paragraph = "".join(text_parts)
+                    # Normalize multiple spaces to single space, but preserve the structure
+                    paragraph = re.sub(r' +', ' ', paragraph).strip()
+                    # Clean up space before punctuation
+                    paragraph = re.sub(r'\s+([.,;:!?])', r'\1', paragraph)
+                    # Ensure space after punctuation
+                    paragraph = re.sub(r'([.,;:!?])([A-Za-z])', r'\1 \2', paragraph)
+                    
+                    # Find footnote citations if any
+                    inline_notes = collect_inline_footnotes(node)
+                    if inline_notes:
+                        notes_text = "; ".join(inline_notes)
+                        paragraph = f"{paragraph} (Footnote: {notes_text})"
+                    
+                    if paragraph:
+                        append_line(paragraph, indent=indent, allow_repeat=True)
+                    return
+
+            if name in {"ul", "ol"}:
+                append_list(node, indent)
+                return
+
+            if name == "table":
+                append_table(node, indent)
+                return
+
+            next_indent = indent
+            is_container = name == "section" or any(
+                keyword in cls for cls in classes for keyword in container_keywords
+            ) or node.has_attr("data-core-component")
+
+            if is_container:
+                next_indent = min(indent + indent_step, max_indent)
+
+            for child in node.children:
+                append_content(child, next_indent)
+
+            if is_container:
+                ensure_paragraph_break()
+        build_footnote_map()
+
+        # Find the main article element
+        article = soup.find("article")
+        
+        if article:
+            # Extract from data-core-wrapper="header" section
+            header_wrapper = article.find("div", {"data-core-wrapper": "header"})
+            if header_wrapper:
+                text_parts.append("=" * 80 + "\n")
+                text_parts.append("ARTICLE HEADER\n")
+                text_parts.append("=" * 80 + "\n\n")
+
+                title = ""
+                meta_title = soup.find("meta", {"name": "citation_title"}) or soup.find("meta", {"property": "og:title"})
+                if meta_title and meta_title.get("content"):
+                    title = clean_text(meta_title.get("content"))
+                if not title:
+                    title_tag = header_wrapper.find("h1")
+                    if title_tag:
+                        title = clean_text(title_tag.get_text(" ", strip=True))
+                if title:
+                    append_heading(1, title)
+
+                author_meta = [clean_text(tag.get("content", "")) for tag in soup.find_all("meta", {"name": "citation_author"})]
+                authors: List[str] = []
+                for author in author_meta:
+                    if author and author not in authors:
+                        authors.append(author)
+                if not authors:
+                    for tag in header_wrapper.select('a[rel="author"], span[data-test="author-name"], span.author-name, span[itemprop="name"], a[itemprop="name"]'):
+                        name_text = clean_text(tag.get_text(" ", strip=True).replace("Search for articles by this author", ""))
+                        if should_skip_text(name_text):
+                            continue
+                        if name_text and name_text not in authors:
+                            authors.append(name_text)
+                if authors:
+                    append_line("Authors: " + ", ".join(authors), allow_repeat=True)
+
+                journal_meta = soup.find("meta", {"name": "citation_journal_title"})
+                if journal_meta and journal_meta.get("content"):
+                    append_line(f"Journal: {clean_text(journal_meta.get('content'))}", allow_repeat=True)
+
+                date_meta = soup.find("meta", {"name": "citation_publication_date"}) or soup.find("meta", {"name": "dc.Date"})
+                if date_meta and date_meta.get("content"):
+                    append_line(f"Publication Date: {clean_text(date_meta.get('content'))}", allow_repeat=True)
+
+                doi_meta = soup.find("meta", {"name": "citation_doi"})
+                if doi_meta and doi_meta.get("content"):
+                    append_line(f"DOI: {clean_text(doi_meta.get('content'))}", allow_repeat=True)
+
+                keywords = []
+                for keyword_meta in soup.find_all("meta", {"name": "citation_keywords"}):
+                    keyword = clean_text(keyword_meta.get("content", ""))
+                    if keyword and keyword not in keywords:
+                        keywords.append(keyword)
+                if keywords:
+                    append_line("Keywords: " + ", ".join(keywords), allow_repeat=True)
+
+                ensure_paragraph_break()
+            
+            # Extract from data-core-wrapper="content" section (main article body)
+            content_wrapper = article.find("div", {"data-core-wrapper": "content"})
+            if content_wrapper:
+                text_parts.append("\n" + "=" * 80 + "\n")
+                text_parts.append("ARTICLE CONTENT\n")
+                text_parts.append("=" * 80 + "\n\n")
+                
+                for child in content_wrapper.children:
+                    append_content(child, 0)
+        
+        # Fallback: if article element or wrappers not found, use old extraction method
+        if not text_parts:
+            logger.warning(" Article wrappers not found, using fallback extraction")
+            
+            # Extract title
+            title_elem = soup.find("h1", {"property": "name"})
+            if not title_elem:
+                title_elem = soup.find("h1")
+            if title_elem:
+                title = title_elem.get_text(strip=True)
+                if title:
+                    text_parts.append(f"# {title}\n\n")
+            
+            # Extract authors
+            authors_elem = soup.find("div", class_="contributors")
+            if authors_elem:
+                authors = authors_elem.get_text(separator=", ", strip=True)
+                if authors:
+                    text_parts.append(f"AUTHORS: {authors}\n\n")
+            
+            # Extract abstract
+            abstract_elem = soup.find("section", id="author-abstract")
+            if abstract_elem:
+                text_parts.append("## ABSTRACT\n\n")
+                for elem in abstract_elem.find_all(['p', 'div']):
+                    elem_text = elem.get_text(separator=" ", strip=True)
+                    if elem_text:
+                        text_parts.append(f"{elem_text}\n")
+            
+            # Extract introduction and main body
+            intro_elem = soup.find("section", id="introduction")
+            if intro_elem:
+                text_parts.append("\n## INTRODUCTION\n\n")
+                for elem in intro_elem.find_all(['h2', 'h3', 'h4', 'p']):
+                    if elem.name in ['h2', 'h3', 'h4']:
+                        level = int(elem.name[1])
+                        elem_text = elem.get_text(strip=True)
+                        if elem_text:
+                            text_parts.append(f"\n{'#' * level} {elem_text}\n\n")
+                    else:
+                        elem_text = elem.get_text(separator=" ", strip=True)
+                        if elem_text and not elem.find_parent('figure'):
+                            text_parts.append(f"{elem_text}\n")
+            
+            # Extract all other body sections
+            body_elem = soup.find("section", id="bodymatter")
+            if body_elem:
+                text_parts.append("\n## MAIN CONTENT\n\n")
+                for elem in body_elem.find_all(['h2', 'h3', 'h4', 'h5', 'h6', 'p']):
+                    if elem.name in ['h2', 'h3', 'h4', 'h5', 'h6']:
+                        level = int(elem.name[1])
+                        elem_text = elem.get_text(strip=True)
+                        if elem_text:
+                            text_parts.append(f"\n{'#' * level} {elem_text}\n\n")
+                    else:
+                        elem_text = elem.get_text(separator=" ", strip=True)
+                        if elem_text and not elem.find_parent('figure'):
+                            text_parts.append(f"{elem_text}\n")
+        
+        # Extract figure captions (from anywhere in the page)
+        figures = soup.find_all("figure")
+        figures_text = []  # Collect figures for JSON
+        if figures:
+            text_parts.append("\n" + "=" * 80 + "\n")
+            text_parts.append("FIGURES\n")
+            text_parts.append("=" * 80 + "\n\n")
+            for idx, fig in enumerate(figures, 1):
+                caption = fig.find("figcaption")
+                if caption:
+                    # Remove only the dropdown blocks with full reference details
+                    # Keep the citation links (a[role="doc-biblioref"]) so extract_text_with_refs can find them
+                    for dropdown in caption.find_all("div", class_="dropBlock__holder"):
+                        dropdown.decompose()
+                    
+                    # Also remove any span.dropBlock that contains the full citation text
+                    # but NOT the citation links themselves
+                    for ref_detail in caption.find_all("span", class_="dropBlock"):
+                        # Only remove if it contains full reference text, not if it's just a citation link
+                        if ref_detail.find("a", role="doc-biblioref") is None:
+                            ref_detail.decompose()
+                    
+                    # Get figure label and title (with citation refs preserved)
+                    fig_label = caption.find("span", class_="label")
+                    fig_title = caption.find("span", class_="figure__title__text")
+                    
+                    # Collect figure caption parts for both text_parts and JSON
+                    figure_caption_parts = []
+                    
+                    if fig_label or fig_title:
+                        if fig_label:
+                            label_parts = extract_text_with_refs(fig_label)
+                            label_text = "".join(label_parts).strip()
+                        else:
+                            label_text = f"Figure {idx}"
+                        
+                        if fig_title:
+                            title_parts = extract_text_with_refs(fig_title)
+                            title_text = "".join(title_parts).strip()
+                        else:
+                            title_text = ""
+                        
+                        text_parts.append(f"\n### {label_text}")
+                        if title_text:
+                            text_parts.append(f": {title_text}")
+                            figure_caption_parts.append(f"{label_text}: {title_text}")
+                        else:
+                            figure_caption_parts.append(label_text)
+                        text_parts.append("\n\n")
+                    
+                    # Extract all caption content, including accordion/hidden content
+                    caption_content = caption.find("div", class_="figure__caption__text__content")
+                    if not caption_content:
+                        caption_content = caption.find("div", class_="accordion__content")
+                    if not caption_content:
+                        # Fallback: get all divs with role="paragraph" or id starting with "fspara"
+                        caption_content = caption
+                    
+                    # Extract all paragraphs within the caption
+                    caption_paras = caption_content.find_all(['div', 'p'], recursive=True)
+                    if caption_paras:
+                        for para in caption_paras:
+                            # Skip if it's a nested button or control element
+                            if para.name == 'button' or 'button' in para.get('class', []):
+                                continue
+                            # Skip if it's just the label or title we already extracted
+                            if para.find_parent(['span']) and 'label' in str(para.find_parent(['span']).get('class', [])):
+                                continue
+                            
+                            # Use extract_text_with_refs for proper superscript/reference handling
+                            para_parts = extract_text_with_refs(para)
+                            para_text = "".join(para_parts).strip()
+                            para_text = re.sub(r' +', ' ', para_text)
+                            
+                            if para_text and len(para_text) > 10:  # Skip very short text fragments
+                                # Remove button text like "Hide caption" or "Figure viewer"
+                                if para_text not in ['Hide caption', 'Figure viewer', 'Show caption', 'Collapse', 'Expand']:
+                                    text_parts.append(f"{para_text}\n\n")
+                                    figure_caption_parts.append(para_text)
+                    else:
+                        # Fallback: get all text from caption
+                        caption_parts = extract_text_with_refs(caption)
+                        caption_text = "".join(caption_parts).strip()
+                        caption_text = re.sub(r' +', ' ', caption_text)
+                        
+                        if caption_text:
+                            # Clean up button text
+                            caption_text = caption_text.replace('Hide caption', '').replace('Figure viewer', '')
+                            caption_text = caption_text.replace('Show caption', '').replace('Collapse', '').replace('Expand', '')
+                            caption_text = ' '.join(caption_text.split())  # Normalize whitespace
+                            if caption_text:
+                                text_parts.append(f"{caption_text}\n\n")
+                                figure_caption_parts.append(caption_text)
+                    
+                    # Add this figure to the figures collection for JSON
+                    if figure_caption_parts:
+                        figures_text.append("\n".join(figure_caption_parts))
+        
+        # Add figures to JSON if any were collected
+        if figures_text:
+            json_data["figures"] = "\n\n".join(figures_text)
+        
+        # Save the last section before adding references
+        if current_section_parts:
+            section_content = "".join(current_section_parts).strip()
+            if section_content:
+                json_data[current_section] = section_content
+        
+        # Add references as a separate section in JSON
+        reference_entries = get_reference_entries()
+        if reference_entries and "REFERENCES" not in "\n".join(text_parts):
+            text_parts.append("\n" + "=" * 80 + "\n")
+            text_parts.append("REFERENCES\n")
+            text_parts.append("=" * 80 + "\n\n")
+            
+            # Build references string for JSON
+            references_text = []
+            for idx, entry in enumerate(reference_entries, 1):
+                references_text.append(f"{idx}. {entry}")
+                text_parts.append(f"{idx}. {entry}\n")
+            
+            # Add references to JSON structure
+            if references_text:
+                json_data["references"] = "\n".join(references_text)
+        
+        full_text = "".join(text_parts)
+        
+        if json_data or full_text.strip():
+            logger.info(f"Successfully extracted {len(json_data)} sections with {len(full_text)} characters total")
+            return json_data
+        else:
+            logger.warning(" No text content extracted from page")
+            return None
+            
+    except Exception as e:
+        logger.error(f" Failed to extract full-text: {e}")
+        logger.debug(traceback.format_exc())
+        return None
+

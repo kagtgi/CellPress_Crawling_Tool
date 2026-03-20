@@ -17,7 +17,14 @@ try:
 except ImportError:
     from src.papers_crawler.cell.crawl_cell_pdf_async import CLIProgressTracker
 
-from .crawl_nature_async import extract_fulltext_nature_as_json, download_pdf_nature, save_json_to_file
+try:
+    from .utils.common import save_json_to_file
+    from .utils.pdf import download_pdf_nature
+    from .utils.text import extract_fulltext_nature_as_json
+except ImportError:
+    from src.papers_crawler.nature.utils.common import save_json_to_file
+    from src.papers_crawler.nature.utils.pdf import download_pdf_nature
+    from src.papers_crawler.nature.utils.text import extract_fulltext_nature_as_json
 
 logger = logging.getLogger(__name__)
 
