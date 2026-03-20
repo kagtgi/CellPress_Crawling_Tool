@@ -10,5 +10,6 @@ __pycache__
 implement-tasks/*
 testing/*
 final-report/*
+data/*
 
 create_report.sh
