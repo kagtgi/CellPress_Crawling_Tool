@@ -61,7 +61,7 @@ class CLIProgressTracker:
                 maxinterval=2.0,  # Maximum 2 seconds between updates
             )
         elif total > 0:
-            print(f"\n📥 Starting download: 0/{total} files (0%)")
+            print(f"\n Starting download: 0/{total} files (0%)")
     
     def update(self, current: int, total: int, status: str = "", file_size: int = 0, speed_kbps: float = 0, stage: str = "", force: bool = False):
         """Update progress display with throttling to prevent too frequent updates."""
@@ -97,7 +97,7 @@ class CLIProgressTracker:
             # Simple text progress (throttled)
             if total > 0:
                 percentage = (current / total) * 100
-                status_text = f"\r📥 Progress: {current}/{total} files ({percentage:.1f}%)"
+                status_text = f"\r Progress: {current}/{total} files ({percentage:.1f}%)"
                 
                 if speed_kbps > 0:
                     if speed_kbps > 1024:
@@ -211,8 +211,8 @@ async def crawl_async(
         """
         nonlocal found_count, downloaded_files, open_access_articles, article_metadata
         
-        print(f"📖 Loading issue: {issue_url}", flush=True)
-        print(f"📅 Issue date (from list): {issue_date}", flush=True)
+        print(f"Loading issue: {issue_url}", flush=True)
+        print(f"Issue date (from list): {issue_date}", flush=True)
         await page.goto(issue_url, timeout=30000)
         await page.wait_for_timeout(2000)
         
@@ -224,7 +224,7 @@ async def crawl_async(
         
         # If date is still Unknown, try to extract from page as fallback
         if issue_date == "Unknown":
-            logger.warning(f"⚠️ No date provided for issue, attempting to extract from page...")
+            logger.warning(f" No date provided for issue, attempting to extract from page...")
             date_selectors = [
                 ("div", {"class": "issue-item__title"}),
                 ("span", {"class": "volume-issue"}),
@@ -239,7 +239,7 @@ async def crawl_async(
                     text = elem.get_text(strip=True)
                     if text and text != "Unknown":
                         issue_date = text
-                        logger.info(f"📅 Extracted issue date from {tag}.{attrs.get('class', [''])[0]}: {issue_date}")
+                        logger.info(f"Extracted issue date from {tag}.{attrs.get('class', [''])[0]}: {issue_date}")
                         break
         
         articles = soup.select(".articleCitation")
@@ -272,7 +272,7 @@ async def crawl_async(
             # Use issue date as publish date for all articles in this issue
             publish_date = issue_date
             
-            print(f"📄 Found {'open-archive' if is_open_archive else 'open-access'} article: {article_title[:60]}...", flush=True)
+            print(f"Found {'open-archive' if is_open_archive else 'open-access'} article: {article_title[:60]}...", flush=True)
             
             try:
                 safe_title = "".join(c for c in article_title if c.isalnum() or c in (' ', '-', '_')).strip()
@@ -282,29 +282,29 @@ async def crawl_async(
                 
                 # Skip if already downloaded
                 if os.path.exists(dest_path) and os.path.getsize(dest_path) > 1000:
-                    logger.info(f"⏭️  Skipping already downloaded: {filename}")
+                    logger.info(f"Skipping already downloaded: {filename}")
                     continue
                 
                 if total_progress_callback:
                     total_progress_callback(found_count, found_count + 1, f"Downloading: {article_title[:50]}...", 0, 0, "starting")
                 elif cli_progress:
-                    cli_progress.update(found_count, found_count + 1, f"⬇️  {article_title[:30]}...", 0, 0, "starting", force=True)
+                    cli_progress.update(found_count, found_count + 1, f"  {article_title[:30]}...", 0, 0, "starting", force=True)
                 else:
-                    logger.info(f"⬇️  Start downloading file: {article_title[:50]}...")
+                    logger.info(f"Start downloading file: {article_title[:50]}...")
                 
                 download_start_time = time.time()
                 
-                logger.info(f"🔗 Clicking PDF link: {pdf_link[:80]}...")
+                logger.info(f"Clicking PDF link: {pdf_link[:80]}...")
                 
                 async with page.expect_download(timeout=30000) as download_info:
                     pdf_selector = f'a.pdfLink[href="{pdf_link}"]'
                     await page.click(pdf_selector, timeout=10000, force=True)
                 
-                logger.info(f"⏳ Waiting for download to complete...")
+                logger.info(f"Waiting for download to complete...")
                 
                 download = await download_info.value
                 
-                logger.info(f"💾 Saving file to: {dest_path}")
+                logger.info(f"Saving file to: {dest_path}")
                 
                 await download.save_as(dest_path)
                 
@@ -321,9 +321,9 @@ async def crawl_async(
                     
                     if cli_progress is None:
                         if speed_kbps > 1024:
-                            logger.info(f"✅ Downloaded file: {filename[:50]} ({file_size_kb:.1f} KB) @ {speed_kbps/1024:.1f} MB/s")
+                            logger.info(f"Downloaded file: {filename[:50]} ({file_size_kb:.1f} KB) @ {speed_kbps/1024:.1f} MB/s")
                         else:
-                            logger.info(f"✅ Downloaded file: {filename[:50]} ({file_size_kb:.1f} KB) @ {speed_kbps:.1f} KB/s")
+                            logger.info(f"Downloaded file: {filename[:50]} ({file_size_kb:.1f} KB) @ {speed_kbps:.1f} KB/s")
                     
                     downloaded_files.append(dest_path)
                     open_access_articles.append(article_title)
@@ -336,12 +336,12 @@ async def crawl_async(
                     if total_progress_callback:
                         total_progress_callback(found_count, found_count, f"Downloaded: {filename[:40]}...", file_size, speed_kbps, "completed")
                     elif cli_progress:
-                        cli_progress.update(found_count, found_count, f"✅ {filename[:25]}...", file_size, speed_kbps, "completed", force=True)
+                        cli_progress.update(found_count, found_count, f" {filename[:25]}...", file_size, speed_kbps, "completed", force=True)
                 else:
-                    logger.error(f"❌ Downloaded file is too small or doesn't exist: {dest_path}")
+                    logger.error(f" Downloaded file is too small or doesn't exist: {dest_path}")
                     
             except Exception as e:
-                logger.error(f"❌ Failed to download PDF for '{article_title[:50]}': {e}")
+                logger.error(f" Failed to download PDF for '{article_title[:50]}': {e}")
                 import traceback
                 logger.debug(traceback.format_exc())
                 continue
@@ -354,7 +354,7 @@ async def crawl_async(
         if total_progress_callback:
             total_progress_callback(0, 0, "Scanning journals for open access articles...", 0, 0, "scanning")
         elif cli_progress:
-            print(f"🔍 Scanning {len(journal_slugs)} journal(s) for open access articles...", flush=True)
+            print(f"Scanning {len(journal_slugs)} journal(s) for open access articles...", flush=True)
         
         async with async_playwright() as p:
             for slug in journal_slugs:
@@ -391,7 +391,7 @@ async def crawl_async(
                     }
                 )
                 
-                print(f"✅ Firefox browser ready for {slug}", flush=True)
+                print(f"Firefox browser ready for {slug}", flush=True)
                 
                 page = await context.new_page()
                 
@@ -406,7 +406,7 @@ async def crawl_async(
                 
                 journal_folder = os.path.join(out_folder, slug.replace('/', '_'))
                 os.makedirs(journal_folder, exist_ok=True)
-                print(f"📂 Journal folder: {journal_folder}")
+                print(f"Journal folder: {journal_folder}")
                 
                 url = f"https://www.cell.com/{slug}/newarticles"
                 print(f"🔎 Crawling journal: {slug} at {url}")
@@ -428,7 +428,7 @@ async def crawl_async(
                 articles = soup.select(".articleCitation")
                 
                 if not articles:
-                    print(f"⚠️ No articles found on {url}. Page title: {page_title}")
+                    print(f"No articles found on {url}. Page title: {page_title}")
                     await page.close()
                     await context.close()
                     await browser.close()  # ← ADD THIS!
@@ -439,7 +439,7 @@ async def crawl_async(
                 journal_download_count = 0
                 journal_target = min(oa_count, limit) if limit else oa_count
                 total_articles_found += journal_target
-                print(f"📚 Found {oa_count} open access articles in {slug} (will download up to {journal_target})")
+                print(f"Found {oa_count} open access articles in {slug} (will download up to {journal_target})")
                 
                 if total_progress_callback:
                     total_progress_callback(found_count, total_articles_found, f"Found {total_articles_found} open access articles", 0, 0, "found")
@@ -495,7 +495,7 @@ async def crawl_async(
                     # Extract publish date (same as year_text which has the date)
                     publish_date = year_text.strip() if year_text else "Unknown"
                     
-                    print(f"📄 Found open-access article: {article_title[:60]}...")
+                    print(f"Found open-access article: {article_title[:60]}...")
                     
                     try:
                         safe_title = "".join(c for c in article_title if c.isalnum() or c in (' ', '-', '_')).strip()
@@ -507,29 +507,29 @@ async def crawl_async(
                             total_progress_callback(found_count, total_articles_found, f"Downloading: {article_title[:50]}...", 0, 0, "starting")
                         elif cli_progress:
                             # Update progress bar to show we're starting this download (force update)
-                            cli_progress.update(found_count, total_articles_found, f"⬇️  {article_title[:30]}...", 0, 0, "starting", force=True)
+                            cli_progress.update(found_count, total_articles_found, f"  {article_title[:30]}...", 0, 0, "starting", force=True)
                         else:
-                            logger.info(f"⬇️  Start downloading file: {article_title[:50]}...")
+                            logger.info(f"Start downloading file: {article_title[:50]}...")
                         
                         download_start_time = time.time()
                         
-                        logger.info(f"🔗 Clicking PDF link: {pdf_link[:80]}...")
+                        logger.info(f"Clicking PDF link: {pdf_link[:80]}...")
                         
                         async with page.expect_download(timeout=30000) as download_info:
                             pdf_selector = f'a.pdfLink[href="{pdf_link}"]'
                             await page.click(pdf_selector, timeout=10000)
                         
-                        logger.info(f"⏳ Waiting for download to complete...")
+                        logger.info(f"Waiting for download to complete...")
                         
                         download = await download_info.value
                         
-                        logger.info(f"💾 Saving file to: {dest_path}")
+                        logger.info(f"Saving file to: {dest_path}")
                         
                         if total_progress_callback:
                             total_progress_callback(found_count, total_articles_found, f"Saving: {article_title[:50]}...", 0, 0, "downloading")
                         elif cli_progress:
                             # Update progress bar to show we're saving (force update)
-                            cli_progress.update(found_count, total_articles_found, f"💾 {article_title[:30]}...", 0, 0, "saving", force=True)
+                            cli_progress.update(found_count, total_articles_found, f" {article_title[:30]}...", 0, 0, "saving", force=True)
                         
                         await download.save_as(dest_path)
                         
@@ -546,9 +546,9 @@ async def crawl_async(
                             
                             if cli_progress is None:
                                 if speed_kbps > 1024:
-                                    logger.info(f"✅ Downloaded file: {filename[:50]} ({file_size_kb:.1f} KB) @ {speed_kbps/1024:.1f} MB/s")
+                                    logger.info(f"Downloaded file: {filename[:50]} ({file_size_kb:.1f} KB) @ {speed_kbps/1024:.1f} MB/s")
                                 else:
-                                    logger.info(f"✅ Downloaded file: {filename[:50]} ({file_size_kb:.1f} KB) @ {speed_kbps:.1f} KB/s")
+                                    logger.info(f"Downloaded file: {filename[:50]} ({file_size_kb:.1f} KB) @ {speed_kbps:.1f} KB/s")
                             
                             downloaded_files.append(dest_path)
                             open_access_articles.append(article_title)
@@ -563,12 +563,12 @@ async def crawl_async(
                                 total_progress_callback(found_count, total_articles_found, f"Downloaded: {filename[:40]}...", file_size, speed_kbps, "completed")
                             elif cli_progress:
                                 # Force update to show completion immediately
-                                cli_progress.update(found_count, total_articles_found, f"✅ {filename[:25]}...", file_size, speed_kbps, "completed", force=True)
+                                cli_progress.update(found_count, total_articles_found, f" {filename[:25]}...", file_size, speed_kbps, "completed", force=True)
                         else:
-                            logger.error(f"❌ Downloaded file is too small or doesn't exist: {dest_path}")
+                            logger.error(f" Downloaded file is too small or doesn't exist: {dest_path}")
                             
                     except Exception as e:
-                        logger.error(f"❌ Failed to download PDF for '{article_title[:50]}': {e}")
+                        logger.error(f" Failed to download PDF for '{article_title[:50]}': {e}")
                         import traceback
                         logger.debug(traceback.format_exc())
                         continue
@@ -577,8 +577,8 @@ async def crawl_async(
                 
                 # Crawl issue archives if requested
                 if crawl_archives:
-                    print(f"\n📚 Crawling issue archives for journal: {slug}", flush=True)
-                    print(f"🔧 Creating separate context for archive crawling...", flush=True)
+                    print(f"\n Crawling issue archives for journal: {slug}", flush=True)
+                    print(f"Creating separate context for archive crawling...", flush=True)
                     
                     # Create a new context and page specifically for archive crawling
                     archive_context = await browser.new_context(
@@ -610,7 +610,7 @@ async def crawl_async(
                         });
                     """)
                     
-                    print(f"✅ Archive context ready", flush=True)
+                    print(f"Archive context ready", flush=True)
                     
                     # Go to issue page
                     issue_index_url = f"https://www.cell.com/{slug}/issues"
@@ -625,7 +625,7 @@ async def crawl_async(
                     soup = BeautifulSoup(html, "html.parser")
                     
                     # Parse all issue links directly from the HTML (they're already in the page, just hidden)
-                    print(f"📂 Parsing issue links from page HTML...", flush=True)
+                    print(f"Parsing issue links from page HTML...", flush=True)
                     issue_links = []
                     
                     # Check if we've passed the Open Archive marker
@@ -633,7 +633,7 @@ async def crawl_async(
                     
                     # Find all issue links directly
                     all_issue_links = soup.select('a[href*="/issue?pii="]')
-                    print(f"🔍 Found {len(all_issue_links)} total issue links on page", flush=True)
+                    print(f"Found {len(all_issue_links)} total issue links on page", flush=True)
                     
                     for link in all_issue_links:
                         href = link.get("href", "")
@@ -646,7 +646,7 @@ async def crawl_async(
                             open_archive_div = parent_li.find_previous("div", class_="list-of-issues__open-archive")
                             if open_archive_div and not in_open_archive:
                                 in_open_archive = True
-                                print(f"📂 Entered Open Archive section", flush=True)
+                                print(f"Entered Open Archive section", flush=True)
                         
                         # Try to extract date from the link text or child elements
                         link_text = link.get_text(strip=True)
@@ -674,15 +674,15 @@ async def crawl_async(
                                     # Avoid duplicates - store (url, is_open_archive, date_text)
                                     if (full_url, in_open_archive, date_text) not in issue_links:
                                         issue_links.append((full_url, in_open_archive, date_text))
-                                        logger.debug(f"✅ Found issue: {date_text[:50]} ({'Open Archive' if in_open_archive else 'Regular'})")
+                                        logger.debug(f" Found issue: {date_text[:50]} ({'Open Archive' if in_open_archive else 'Regular'})")
                                 else:
-                                    logger.debug(f"⏭️  Skipped issue (year {issue_year} not in range): {date_text[:50]}")
+                                    logger.debug(f"  Skipped issue (year {issue_year} not in range): {date_text[:50]}")
                             except Exception as e:
-                                logger.debug(f"⚠️  Failed to parse date from: {date_text[:50]} - {e}")
+                                logger.debug(f"  Failed to parse date from: {date_text[:50]} - {e}")
                         else:
-                            logger.debug(f"⚠️  No date text found for link: {href[:50]}")
+                            logger.debug(f"  No date text found for link: {href[:50]}")
                     
-                    print(f"📚 Found {len(issue_links)} issues to crawl for {slug} (filtered by year {year_from}-{year_to})", flush=True)
+                    print(f"Found {len(issue_links)} issues to crawl for {slug} (filtered by year {year_from}-{year_to})", flush=True)
                     
                     # Crawl each issue using the archive page
                     for issue_url, is_open_archive, issue_date in issue_links:
@@ -695,18 +695,18 @@ async def crawl_async(
                             if should_stop:
                                 break
                         except Exception as e:
-                            logger.error(f"❌ Failed to crawl issue {issue_url}: {e}")
+                            logger.error(f" Failed to crawl issue {issue_url}: {e}")
                             continue
                         
                         await asyncio.sleep(2)  # Be polite between issues
                     
                     # Close the archive context and page
-                    print(f"🔒 Closing archive context for journal: {slug}", flush=True)
+                    print(f"Closing archive context for journal: {slug}", flush=True)
                     await archive_page.close()
                     await archive_context.close()
                 
                 # Close the page, context, and browser after finishing this journal
-                print(f"🔒 Closing browser for journal: {slug}", flush=True)
+                print(f"Closing browser for journal: {slug}", flush=True)
                 await page.close()
                 await context.close()
                 await browser.close()
@@ -715,7 +715,7 @@ async def crawl_async(
     if cli_progress:
         cli_progress.close()
     
-    print(f"\n🎉 Downloaded {found_count} PDFs to {out_folder}")
+    print(f"\n Downloaded {found_count} PDFs to {out_folder}")
     
     # Create CSV file with download summary
     if downloaded_files:
@@ -723,7 +723,7 @@ async def crawl_async(
         csv_filename = f"download_summary_{timestamp}.csv"
         csv_path = os.path.join(out_folder, csv_filename)
         
-        print(f"\n📄 Creating download summary CSV: {csv_filename}")
+        print(f"\n Creating download summary CSV: {csv_filename}")
         
         try:
             with open(csv_path, 'w', newline='', encoding='utf-8') as csvfile:
@@ -744,13 +744,13 @@ async def crawl_async(
                         f"{file_size_kb:.1f}"
                     ])
             
-            logger.info(f"✅ CSV summary saved to: {csv_path}")
+            logger.info(f"CSV summary saved to: {csv_path}")
         except Exception as e:
-            logger.error(f"❌ Failed to create CSV summary: {e}")
+            logger.error(f" Failed to create CSV summary: {e}")
     
     # Zip all journal subfolders into one archive
     if downloaded_files:
-        print(f"\n📦 Creating ZIP archive with all downloaded PDFs...")
+        print(f"\n Creating ZIP archive with all downloaded PDFs...")
         
         zip_filename = f"all_journals_{timestamp}.zip"
         zip_path = os.path.join(out_folder, zip_filename)
@@ -769,10 +769,10 @@ async def crawl_async(
                     zipf.write(csv_path, os.path.basename(csv_path))
             
             zip_size_mb = os.path.getsize(zip_path) / (1024 * 1024)
-            logger.info(f"✅ Created ZIP archive: {zip_filename} ({zip_size_mb:.1f} MB)")
-            logger.info(f"📦 Archive contains {len(downloaded_files)} PDFs from {len(set(os.path.dirname(f) for f in downloaded_files))} journals")
+            logger.info(f"Created ZIP archive: {zip_filename} ({zip_size_mb:.1f} MB)")
+            logger.info(f"Archive contains {len(downloaded_files)} PDFs from {len(set(os.path.dirname(f) for f in downloaded_files))} journals")
         except Exception as e:
-            logger.error(f"❌ Failed to create ZIP archive: {e}")
+            logger.error(f" Failed to create ZIP archive: {e}")
     
     return downloaded_files, open_access_articles
 
@@ -835,19 +835,19 @@ async def discover_journals_async(force_refresh: bool = False) -> List[Tuple[str
                 });
             """)
             
-            print("🔗 Loading Cell.com homepage...")
+            print(" Loading Cell.com homepage...")
             await page.goto("https://www.cell.com", timeout=60000, wait_until="domcontentloaded")
             
             try:
                 await page.wait_for_selector("ul.mega-menu, nav, header", timeout=10000)
-                print("✅ Navigation menu loaded")
+                print(" Navigation menu loaded")
             except Exception as e:
-                print(f"⚠️ Could not find navigation menu: {e}")
+                print(f"Could not find navigation menu: {e}")
             
             await page.wait_for_timeout(3000)
             
             html = await page.content()
-            print(f"📄 Retrieved page content: {len(html)} bytes")
+            print(f"Retrieved page content: {len(html)} bytes")
             
             await context.close()
             await browser.close()
@@ -856,11 +856,11 @@ async def discover_journals_async(force_refresh: bool = False) -> List[Tuple[str
             journals_panel = soup.find('div', id='main-menu-panel-1')
             
             if not journals_panel:
-                print("⚠️ Could not find Journals menu panel (main-menu-panel-1)")
+                print(" Could not find Journals menu panel (main-menu-panel-1)")
                 journals_panel = soup
             
             all_links = journals_panel.find_all("a", href=True)
-            print(f"🔗 Found {len(all_links)} total links in Journals section")
+            print(f"Found {len(all_links)} total links in Journals section")
             
             seen = set()
             for a in all_links:
@@ -898,17 +898,17 @@ async def discover_journals_async(force_refresh: bool = False) -> List[Tuple[str
                         logger.debug(f"Found journal: {slug} -> {clean_text}")
             
             if results:
-                print(f"✅ Successfully discovered {len(results)} journals from Cell.com")
+                print(f"Successfully discovered {len(results)} journals from Cell.com")
                 try:
                     with open(cache_file, "w", encoding="utf8") as f:
                         json.dump(results, f, ensure_ascii=False, indent=2)
-                    print(f"💾 Cached {len(results)} journals to {cache_file}")
+                    print(f"Cached {len(results)} journals to {cache_file}")
                 except Exception as e:
-                    print(f"⚠️ Failed to cache journals: {e}")
+                    print(f"Failed to cache journals: {e}")
                 return results
             else:
                 raise Exception("No journals found on Cell.com - page structure may have changed")
                 
     except Exception as e:
-        print(f"❌ Failed to discover journals from Cell.com: {e}")
+        print(f"Failed to discover journals from Cell.com: {e}")
         raise Exception(f"Could not load journals from Cell.com. Error: {str(e)}. Please check your internet connection and try again.")

@@ -6,3 +6,9 @@ __pycache__
 .pytest_cache
 .ipynb_checkpoints
 .vscode
+
+implement-tasks/*
+testing/*
+final-report/*
+
+create_report.sh

@@ -30,7 +30,7 @@ _EUTILS = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
 
 # NCBI asks for a polite delay between requests when not using an API key.
 # 3 requests/second without key, 10/second with key.
-_REQUEST_DELAY = 0.34  # seconds
+_REQUEST_DELAY = 0.5  # seconds
 
 
 # ---------------------------------------------------------------------------
@@ -135,7 +135,8 @@ async def search_pubmed_async(
     year_from: int,
     year_to: int,
     keywords: str = "",
-    limit: int = 10_000,
+    limit: Optional[int] = None,
+    chunk_size_months: int = 6,
     api_key: Optional[str] = None,
     progress_callback=None,
 ) -> Tuple[List[Dict], List[Dict]]:
@@ -175,20 +176,46 @@ async def search_pubmed_async(
                 "pmc_url":     str,   # PMC URL (empty for fee-only papers)
             }
     """
-    # ── Build query ──────────────────────────────────────────────────────────
-    # PubMed date filter: YYYY/01/01:YYYY/12/31[dp]
-    date_filter = f"{year_from}/01/01:{year_to}/12/31[dp]"
-    query_parts = [f'"{journal}"[jour]', date_filter]
-    if keywords.strip():
-        query_parts.append(keywords.strip())
-    query = " AND ".join(query_parts)
-
-    print(f"🔍 PubMed query: {query}", flush=True)
-
-    # ── Step 1: esearch – get PMIDs ──────────────────────────────────────────
-    print("⏳ Fetching PMIDs from PubMed...", flush=True)
-    pmids = await asyncio.to_thread(_esearch, query, limit, api_key)
-    print(f"📋 Found {len(pmids)} PMIDs", flush=True)
+    # ── Build query & Step 1: esearch – get PMIDs ───────────────────────────
+    import calendar
+    from datetime import date, timedelta
+    
+    print(" Fetching PMIDs from PubMed in chunks...", flush=True)
+    pmids = []
+    
+    start_date = date(year_from, 1, 1)
+    end_date = date(year_to, 12, 31)
+    current_start = start_date
+    
+    while current_start <= end_date:
+        months_to_add = chunk_size_months - 1
+        end_year = current_start.year + (current_start.month + months_to_add - 1) // 12
+        end_month = (current_start.month + months_to_add - 1) % 12 + 1
+        last_day = calendar.monthrange(end_year, end_month)[1]
+        current_end = date(end_year, end_month, last_day)
+        if current_end > end_date:
+            current_end = end_date
+            
+        date_filter = f"{current_start.strftime('%Y/%m/%d')}:{current_end.strftime('%Y/%m/%d')}[ppdat]"
+        
+        query_parts = [f'"{journal}"[jour]', date_filter]
+        if keywords.strip():
+            query_parts.append(keywords.strip())
+        query = " AND ".join(query_parts)
+        
+        print(f" Query: {query}", flush=True)
+        chunk_pmids = await asyncio.to_thread(_esearch, query, 10000, api_key)
+        pmids.extend(chunk_pmids)
+        
+        if limit and len(pmids) >= limit:
+            pmids = pmids[:limit]
+            break
+            
+        if current_end == end_date:
+            break
+        current_start = current_end + timedelta(days=1)
+        
+    print(f"Found {len(pmids)} PMIDs", flush=True)
 
     if not pmids:
         return [], []
@@ -202,7 +229,7 @@ async def search_pubmed_async(
         batch = pmids[i : i + batch_size]
         batch_num = i // batch_size + 1
         total_batches = (len(pmids) + batch_size - 1) // batch_size
-        print(f"📥 Fetching metadata: batch {batch_num}/{total_batches} ({len(batch)} articles)...", flush=True)
+        print(f"Fetching metadata: batch {batch_num}/{total_batches} ({len(batch)} articles)...", flush=True)
 
         records = await asyncio.to_thread(_esummary_batch, batch, api_key)
 
@@ -217,7 +244,7 @@ async def search_pubmed_async(
         await asyncio.sleep(_REQUEST_DELAY)
 
     print(
-        f"\n✅ PubMed: {len(all_articles)} articles total "
+        f"\nPubMed: {len(all_articles)} articles total "
         f"({len(oa_articles)} open-access, "
         f"{len(all_articles) - len(oa_articles)} fee-based)",
         flush=True,
@@ -231,7 +258,8 @@ async def crawl_pubmed_async(
     year_to: int = 2024,
     keywords: str = "",
     out_folder: str = "papers_pubmed",
-    limit: int = 10_000,
+    limit: Optional[int] = None,
+    chunk_size_months: int = 6,
     api_key: Optional[str] = None,
     save_csv: bool = True,
     progress_callback=None,
@@ -264,6 +292,7 @@ async def crawl_pubmed_async(
         year_to=year_to,
         keywords=keywords,
         limit=limit,
+        chunk_size_months=chunk_size_months,
         api_key=api_key,
         progress_callback=progress_callback,
     )
@@ -295,7 +324,8 @@ async def crawl_pubmed_journals_async(
     year_to: int = 2024,
     keywords: str = "",
     out_folder: str = "papers_pubmed",
-    limit_per_journal: int = 10_000,
+    limit_per_journal: Optional[int] = None,
+    chunk_size_months: int = 6,
     api_key: Optional[str] = None,
     save_csv: bool = True,
     progress_callback=None,
@@ -332,6 +362,7 @@ async def crawl_pubmed_journals_async(
             keywords=keywords,
             out_folder=jnl_folder,
             limit=limit_per_journal,
+            chunk_size_months=chunk_size_months,
             api_key=api_key,
             save_csv=save_csv,
             progress_callback=progress_callback,
@@ -340,16 +371,16 @@ async def crawl_pubmed_journals_async(
         oa_articles.extend(oa)
 
     # Aggregate CSV
-    if save_csv and all_articles:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        _write_csv(
-            all_articles,
-            os.path.join(out_folder, f"pubmed_all_journals_{timestamp}.csv"),
-            label="all journals combined",
-        )
+    # if save_csv and all_articles:
+    #     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    #     _write_csv(
+    #         all_articles,
+    #         os.path.join(out_folder, f"pubmed_all_journals_{timestamp}.csv"),
+    #         label="all journals combined",
+    #     )
 
     print(
-        f"\n🎉 PubMed crawl complete: {len(all_articles)} articles across {len(journals)} journal(s) "
+        f"\n PubMed crawl complete: {len(all_articles)} articles across {len(journals)} journal(s) "
         f"({len(oa_articles)} OA)",
         flush=True,
     )
@@ -372,9 +403,9 @@ def _write_csv(articles: List[Dict], path: str, label: str = "") -> None:
             writer.writeheader()
             writer.writerows(articles)
         size_kb = os.path.getsize(path) / 1024
-        print(f"💾 Saved {label} CSV ({len(articles)} rows, {size_kb:.1f} KB): {path}", flush=True)
+        print(f"Saved {label} CSV ({len(articles)} rows, {size_kb:.1f} KB): {path}", flush=True)
     except Exception as e:
-        logger.error(f"❌ Failed to write CSV {path}: {e}")
+        logger.error(f" Failed to write CSV {path}: {e}")
 
 
 def _safe_name(name: str) -> str:

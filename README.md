@@ -81,6 +81,89 @@ from papers_crawler import (
 
 ---
 
+## Command-Line Usage
+
+The refactored codebase provides modular command-line scripts for each source to flexibly extract papers (PDFs and/or JSON metadata).
+
+### 1. Cell.com Crawler
+
+Crawl Cell.com papers to extract PDFs and structured full-text JSON.
+
+```bash
+python -m papers_crawler.cell.crawl_cell --journal-slugs cell immunity \
+    --year-from 2024 --year-to 2025 \
+    --pdf-output ./data/pdfs \
+    --json-output ./data/json \
+    --max-papers 20
+```
+
+**Parameters:**
+
+- `--journal-slugs`: (Required) Space-separated journal identifiers. Slugs can be found by looking at the journal URL on Cell.com (e.g., for `https://www.cell.com/immunity/home`, the slug is `immunity`).
+- `--year-from`, `--year-to`: Start and end year filter.
+- `--pdf-output`, `--json-output`: Output directories.
+- `--max-papers`: Maximum number of papers per journal.
+- `--no-pdf`, `--no-json`: Add these flags to skip extracting PDF or JSON formats.
+
+**Output:**
+
+- Downloaded PDFs stored in `./data/pdfs/<slug>/`
+- Structured JSON extracted stored in `./data/json/<slug>/Article_Title_YYYY.json`
+
+### 2. Nature.com Crawler
+
+Crawl Nature.com open-access papers for PDFs and structured full-text JSON.
+
+```bash
+python -m papers_crawler.nature.crawl_nature --journal-slugs nature-medicine nature-immunology \
+    --year-from 2024 --year-to 2025 \
+    --pdf-output ./data/pdfs \
+    --json-output ./data/json \
+    --max-papers 50
+```
+
+**Parameters:**
+
+- `--journal-slugs`: (Required) Space-separated journal identifiers. Find a slug in the journal's Nature.com URL (e.g., `https://www.nature.com/nm/` maps to `nature-medicine`). Alternatively, use the `discover_journals_nature_async()` API.
+- `--year-from`, `--year-to`: Start and end year filter for crawling.
+- `--pdf-output`, `--json-output`: Output directories for downloaded content.
+- `--max-papers`: Maximum number of papers per journal.
+
+**Output:**
+
+- Downloaded open-access PDFs in `./data/pdfs/<slug>/`
+- Extracted JSON text in `./data/json/<slug>/Article_Title_YYYY.json`
+
+### 3. PubMed Crawler
+
+Crawl titles and metadata using the NCBI E-utilities REST API (no browser required).
+
+```bash
+python -m papers_crawler.pubmed.crawl_pubmed --journals "Nature Immunology" "Cell" \
+    --year-from 2024 --year-to 2025 \
+    --out-folder ./data/pubmed \
+    --max-papers 1000 \
+    --chunk-size 6 \
+    --keywords "cancer" \
+    --api-key "YOUR_NCBI_API_KEY"
+```
+
+**Parameters:**
+
+- `--journals`: (Required) Space-separated exact journal names as they appear in PubMed (e.g., `"Nature Immunology"`, `"Cell"`). Enclose names with spaces in quotes.
+- `--year-from`, `--year-to`: Publication year range.
+- `--out-folder`: Directory where the resulting CSV files and summaries will be saved.
+- `--max-papers`: Max number of records to fetch per journal. If omitted, all matching papers in the time range are fetched.
+- `--chunk-size`: Chunk size in months for splitting time ranges to bypass PubMed's query limits (default: 6).
+- `--keywords`: Optional extra search terms for more specific scraping.
+- `--api-key`: Optional NCBI API key for higher rate limits (10 req/s vs 3 req/s).
+
+**Output:**
+
+- CSV summaries for the fetched metadata saved in `./data/pubmed/` (e.g., `pubmed_all_journals_YYYYMMDD_HHMMSS.csv`).
+
+---
+
 ## API reference
 
 ### 1 — CellPress: discover journals
