@@ -145,23 +145,32 @@ python -m papers_crawler.nature.crawl_nature --use-input-file y \
 
 ### 3. PubMed Crawler
 
-Crawl titles and metadata using the NCBI E-utilities REST API (no browser required).
+Crawl titles and metadata using the NCBI E-utilities REST API, or extract full text and PDFs of open-access papers.
 
 ```bash
-python -m papers_crawler.pubmed.crawl_pubmed --journals "Nature Immunology" "Cell" \
+# Example 1: Extract metadata, PDFs, and JSON via fixed arguments
+python -m papers_crawler.pubmed.crawl_pubmed_fulltext --journals "Nature Immunology" "Cell" \
     --year-from 2024 --year-to 2025 \
     --out-folder ./data/pubmed \
-    --max-papers 1000 \
-    --chunk-size 6 \
-    --keywords "cancer" \
-    --api-key "YOUR_NCBI_API_KEY"
+    --pdf-output ./data/pdfs \
+    --json-output ./data/json \
+    --max-papers 1000
+
+# Example 2: Extract PDFs and JSON via an input file containing "pmc_id"
+python -m papers_crawler.pubmed.crawl_pubmed_fulltext --use-input-file y \
+    --input-file ./input.csv \
+    --pdf-output ./data/pdfs \
+    --json-output ./data/json
 ```
 
 **Parameters:**
 
-- `--journals`: (Required) Space-separated exact journal names as they appear in PubMed (e.g., `"Nature Immunology"`, `"Cell"`). Enclose names with spaces in quotes.
+- `--use-input-file`: Set to `y` to crawl from a list of PMC IDs instead of PubMed search.
+- `--input-file`: Path to the input CSV/Excel/JSONL file containing a `pmc_id` field.
+- `--journals`: (Required if not using input file) Space-separated exact journal names as they appear in PubMed (e.g., `"Nature Immunology"`, `"Cell"`).
 - `--year-from`, `--year-to`: Publication year range.
-- `--out-folder`: Directory where the resulting CSV files and summaries will be saved.
+- `--out-folder`: Directory where the metadata CSV files will be saved.
+- `--pdf-output`, `--json-output`: Output directories for downloaded content.
 - `--max-papers`: Max number of records to fetch per journal. If omitted, all matching papers in the time range are fetched.
 - `--chunk-size`: Chunk size in months for splitting time ranges to bypass PubMed's query limits (default: 6).
 - `--keywords`: Optional extra search terms for more specific scraping.
@@ -169,7 +178,9 @@ python -m papers_crawler.pubmed.crawl_pubmed --journals "Nature Immunology" "Cel
 
 **Output:**
 
-- CSV summaries for the fetched metadata saved in `./data/pubmed/` (e.g., `pubmed_all_journals_YYYYMMDD_HHMMSS.csv`).
+- CSV summaries for the fetched metadata saved in `./data/pubmed/`.
+- Downloaded PDFs in `--pdf-output` directory.
+- Extracted JSON text in `--json-output` directory.
 
 ---
 
