@@ -25,11 +25,14 @@ async def extract_fulltext_pubmed_as_json(page: Page, pmc_id: str) -> Optional[D
         url = f"https://www.ncbi.nlm.nih.gov/pmc/articles/{pmc_id}/"
         logger.info(f"Navigating to PMC page: {url}")
         
+        print(f"Loading page {url}...")
         await page.goto(url, timeout=30000)
         await page.wait_for_timeout(2000)
         
         html = await page.content()
         soup = BeautifulSoup(html, "html.parser")
+
+        print("HTML Got! Extract content...")
         
         json_data = {
             "url": url,
