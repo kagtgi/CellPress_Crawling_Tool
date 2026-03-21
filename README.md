@@ -145,11 +145,11 @@ python -m papers_crawler.nature.crawl_nature --use-input-file y \
 
 ### 3. PubMed Crawler
 
-Crawl titles and metadata using the NCBI E-utilities REST API, or extract full text and PDFs of open-access papers.
+Crawl titles and metadata using the NCBI E-utilities REST API, or extract full text and PDFs of open-access papers. The crawler reliably downloads PDFs for open-access papers using the official PubMed Open Access API Service (`oa.fcgi`), falling back to extracting from `.tar.gz` packages when necessary.
 
 ```bash
 # Example 1: Extract metadata, PDFs, and JSON via fixed arguments
-python -m papers_crawler.pubmed.crawl_pubmed_fulltext --journals "Nature Immunology" "Cell" \
+python -m papers_crawler.pubmed.crawl_pubmed --journals "Nature Immunology" "Cell" \
     --year-from 2024 --year-to 2025 \
     --out-folder ./data/pubmed \
     --pdf-output ./data/pdfs \
@@ -157,7 +157,7 @@ python -m papers_crawler.pubmed.crawl_pubmed_fulltext --journals "Nature Immunol
     --max-papers 1000
 
 # Example 2: Extract PDFs and JSON via an input file containing "pmc_id"
-python -m papers_crawler.pubmed.crawl_pubmed_fulltext --use-input-file y \
+python -m papers_crawler.pubmed.crawl_pubmed --use-input-file y \
     --input-file ./input.csv \
     --pdf-output ./data/pdfs \
     --json-output ./data/json
