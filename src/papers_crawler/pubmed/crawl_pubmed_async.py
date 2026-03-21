@@ -17,6 +17,7 @@ import time
 import traceback
 import zipfile
 from datetime import datetime
+import xml.etree.ElementTree as ET
 from typing import Dict, List, Optional, Tuple
 
 import requests
@@ -103,7 +104,37 @@ def _esummary_batch(pmids: List[str], api_key: Optional[str] = None) -> List[Dic
                 pmc_id = id_obj.get("value", "")
                 break
 
-        is_oa = bool(pmc_id)
+        # Checking if the paper is open-access using Open Access App Service API
+        is_oa = None
+
+        if not pmc_id:
+            is_oa = False
+        else:
+            oa_url = f"https://www.ncbi.nlm.nih.gov/pmc/utils/oa/oa.fcgi?id={pmc_id}"
+            oa_resp = requests.get(oa_url, timeout=30)
+            if oa_resp.status_code != 200:
+                logger.error(f"Failed to query OA API. HTTP status: {oa_resp.status}")
+                raise  Exception(f"Failed to query OA API. HTTP status: {oa_resp.status}")
+                
+            xml_data = oa_resp.text
+
+            # print(f"\nContent: \n{xml_data}")
+            
+            try:
+                root = ET.fromstring(xml_data)
+            except ET.ParseError:
+                logger.error(f"Failed to parse XML from OA API for {pmc_id}")
+                raise  Exception(f"Failed to query OA API. HTTP status: {oa_resp.status}")
+            
+            error_node = root.find('.//error')
+            if error_node is not None:
+                err_code = error_node.attrib.get('code', 'Unknown')
+                err_msg = error_node.text or 'No error message provided'
+                # logger.error(f"OA API returned error for {pmc_id}: [{err_code}] {err_msg}")
+
+                is_oa = False
+            else:
+                is_oa = True
 
         results.append(
             {

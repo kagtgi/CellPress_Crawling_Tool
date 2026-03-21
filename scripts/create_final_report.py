@@ -24,6 +24,10 @@ def main():
 
     data = {
         "title": init_report["title"],
+        "pmid": init_report["pmid"],
+        "pmc_id": init_report["pmc_id"],
+        "pmc_url": init_report["pmc_url"],
+        "pm_url": init_report["url"],
         "url": init_report["doi"].map(lambda x: f"https://doi.org/{x}" if x else None),
         "interest?": [None] * len(init_report)
     }
