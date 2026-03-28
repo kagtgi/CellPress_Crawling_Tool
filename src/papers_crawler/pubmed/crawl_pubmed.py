@@ -112,7 +112,7 @@ async def main():
             return
             
         print("Fetching PMIDs and metadata using fixed arguments...")
-        all_articles, oa_articles = await crawl_pubmed_journals_async(
+        all_articles, oa_articles, pa_articles = await crawl_pubmed_journals_async(
             journals=args.journals,
             year_from=args.year_from,
             year_to=args.year_to,
@@ -124,7 +124,8 @@ async def main():
         )
         
         pmc_ids = [art['pmc_id'] for art in oa_articles if art.get('pmc_id')]
-        print(f"Found {len(pmc_ids)} open-access articles with PMC IDs from search.")
+        print(f"Found {len(pa_articles)} public-access articles with PMC IDs from search.")
+        print(f"Found {len(oa_articles)} open-access articles from search.")
         
         # Only process if pdf_output or json_output is specified
         if args.pdf_output or args.json_output:

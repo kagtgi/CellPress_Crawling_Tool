@@ -28,7 +28,6 @@ logger = logging.getLogger(__name__)
 # NCBI E-utilities base URL
 # ---------------------------------------------------------------------------
 _EUTILS = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
-
 # NCBI asks for a polite delay between requests when not using an API key.
 # 3 requests/second without key, 10/second with key.
 _REQUEST_DELAY = 0.5  # seconds
@@ -106,6 +105,7 @@ def _esummary_batch(pmids: List[str], api_key: Optional[str] = None) -> List[Dic
 
         # Checking if the paper is open-access using Open Access App Service API
         is_oa = None
+        is_pa = bool(pmc_id)
 
         if not pmc_id:
             is_oa = False
@@ -149,6 +149,7 @@ def _esummary_batch(pmids: List[str], api_key: Optional[str] = None) -> List[Dic
                 "doi": doi,
                 "pmc_id": pmc_id,
                 "open_access": is_oa,
+                "public_access": is_pa,
                 "url": f"https://pubmed.ncbi.nlm.nih.gov/{uid}/",
                 "pmc_url": f"https://www.ncbi.nlm.nih.gov/pmc/articles/{pmc_id}/" if pmc_id else "",
             }
@@ -254,6 +255,7 @@ async def search_pubmed_async(
     # ── Step 2: esummary – get metadata in batches of 200 ───────────────────
     all_articles: List[Dict] = []
     oa_articles: List[Dict] = []
+    pa_articles: List[Dict] = []
     batch_size = 200
 
     for i in range(0, len(pmids), batch_size):
@@ -268,6 +270,8 @@ async def search_pubmed_async(
             all_articles.append(rec)
             if rec["open_access"]:
                 oa_articles.append(rec)
+            if rec["public_access"]:
+                pa_articles.append(rec)
             if progress_callback:
                 progress_callback(rec)
 
@@ -277,10 +281,11 @@ async def search_pubmed_async(
     print(
         f"\nPubMed: {len(all_articles)} articles total "
         f"({len(oa_articles)} open-access, "
-        f"{len(all_articles) - len(oa_articles)} fee-based)",
+        f"({len(pa_articles)} public-access, "
+        f"{len(all_articles) - len(oa_articles) - len(pa_articles)} closed-access)",
         flush=True,
     )
-    return all_articles, oa_articles
+    return all_articles, oa_articles, pa_articles
 
 
 async def crawl_pubmed_async(
@@ -317,7 +322,7 @@ async def crawl_pubmed_async(
     """
     os.makedirs(out_folder, exist_ok=True)
 
-    all_articles, oa_articles = await search_pubmed_async(
+    all_articles, oa_articles, pa_articles = await search_pubmed_async(
         journal=journal,
         year_from=year_from,
         year_to=year_to,
@@ -341,8 +346,14 @@ async def crawl_pubmed_async(
                 os.path.join(out_folder, f"pubmed_oa_{timestamp}.csv"),
                 label="open-access articles",
             )
+        if pa_articles:
+            _write_csv(
+                pa_articles,
+                os.path.join(out_folder, f"pubmed_pa_{timestamp}.csv"),
+                label="public-access articles"
+            )
 
-    return all_articles, oa_articles
+    return all_articles, oa_articles, pa_articles
 
 
 # ---------------------------------------------------------------------------
@@ -382,11 +393,12 @@ async def crawl_pubmed_journals_async(
     os.makedirs(out_folder, exist_ok=True)
     all_articles: List[Dict] = []
     oa_articles: List[Dict] = []
+    pa_articles: List[Dict] = []
 
     for journal in journals:
         print(f"\n{'─'*60}", flush=True)
         jnl_folder = os.path.join(out_folder, _safe_name(journal))
-        arts, oa = await crawl_pubmed_async(
+        arts, oa, pa = await crawl_pubmed_async(
             journal=journal,
             year_from=year_from,
             year_to=year_to,
@@ -400,6 +412,7 @@ async def crawl_pubmed_journals_async(
         )
         all_articles.extend(arts)
         oa_articles.extend(oa)
+        pa_articles.extend(pa)
 
     # Aggregate CSV
     # if save_csv and all_articles:
@@ -415,7 +428,7 @@ async def crawl_pubmed_journals_async(
         f"({len(oa_articles)} OA)",
         flush=True,
     )
-    return all_articles, oa_articles
+    return all_articles, oa_articles, pa_articles
 
 
 # ---------------------------------------------------------------------------
