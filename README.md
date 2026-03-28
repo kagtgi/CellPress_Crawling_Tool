@@ -319,7 +319,7 @@ Uses the **NCBI E-utilities REST API** — no browser or Playwright needed.
 from papers_crawler import search_pubmed_async, crawl_pubmed_async, crawl_pubmed_journals_async
 
 # ── Single search ──────────────────────────────────────────────────────────
-all_articles, oa_articles = await search_pubmed_async(
+all_articles, oa_article, pa_articles = await search_pubmed_async(
     journal   = "Nature Immunology",  # as it appears in PubMed
     year_from = 2023,
     year_to   = 2024,
@@ -329,7 +329,7 @@ all_articles, oa_articles = await search_pubmed_async(
 )
 
 # ── Single journal + save CSV ──────────────────────────────────────────────
-all_articles, oa_articles = await crawl_pubmed_async(
+all_articles, oa_articles, pa_articles = await crawl_pubmed_async(
     journal    = "Cell",
     year_from  = 2023,
     year_to    = 2024,
@@ -338,7 +338,7 @@ all_articles, oa_articles = await crawl_pubmed_async(
 )
 
 # ── Multiple journals ──────────────────────────────────────────────────────
-all_articles, oa_articles = await crawl_pubmed_journals_async(
+all_articles, oa_articles, pa_articles = await crawl_pubmed_journals_async(
     journals   = ["Nature", "Cell", "Science"],
     year_from  = 2024,
     year_to    = 2024,
@@ -353,12 +353,14 @@ Each article record contains:
     "pmid":        "38123456",
     "title":       "Article title",
     "authors":     "Smith J, Doe A",
+    "abstract":    "Abstraction",
     "journal":     "Nature Immunology",
     "pub_date":    "2024 Jan",
     "year":        2024,
     "doi":         "10.1038/...",
     "pmc_id":      "PMC12345678",    # empty string if not on PMC
     "open_access": True,             # True if pmc_id is present
+    "public_access": True,
     "url":         "https://pubmed.ncbi.nlm.nih.gov/38123456/",
     "pmc_url":     "https://www.ncbi.nlm.nih.gov/pmc/articles/PMC12345678/",
 }
