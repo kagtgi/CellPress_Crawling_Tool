@@ -23,12 +23,11 @@ def main():
     init_report = pd.read_csv(args.input)
 
     data = {
-        "title": init_report["title"],
         "pmid": init_report["pmid"],
+        "title": init_report["title"],
         "pmc_id": init_report["pmc_id"],
-        "pmc_url": init_report["pmc_url"],
-        "pm_url": init_report["url"],
         "url": init_report["doi"].map(lambda x: f"https://doi.org/{x}" if x else None),
+        "open_access": init_report["open_access"],
         "interest?": [None] * len(init_report)
     }
 
