@@ -11,5 +11,6 @@ implement-tasks/*
 testing/*
 final-report/*
 data/*
+scripts/tmp/*
 
 create_report.sh

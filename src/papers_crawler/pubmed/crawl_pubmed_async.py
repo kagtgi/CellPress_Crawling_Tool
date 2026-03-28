@@ -519,7 +519,7 @@ def _write_csv(articles: List[Dict], path: str, label: str = "") -> None:
     """Write article list to a CSV file."""
     fieldnames = [
         "pmid", "title", "authors", "abstract", "journal", "pub_date", "year",
-        "doi", "open_access", "pmc_id", "url", "pmc_url",
+        "doi", "open_access", "public_access", "pmc_id", "url", "pmc_url",
     ]
     try:
         with open(path, "w", newline="", encoding="utf-8") as f:
