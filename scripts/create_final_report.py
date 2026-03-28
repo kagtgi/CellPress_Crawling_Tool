@@ -25,10 +25,13 @@ def main():
     data = {
         "pmid": init_report["pmid"],
         "title": init_report["title"],
-        "pmc_id": init_report["pmc_id"],
+        "abstract": init_report["abstract"],
         "url": init_report["doi"].map(lambda x: f"https://doi.org/{x}" if x else None),
+        "pmc_id": init_report["pmc_id"],
+        "interest?": [None] * len(init_report),
         "open_access": init_report["open_access"],
-        "interest?": [None] * len(init_report)
+        "public_access": init_report["public_access"],
+        "category": [None] * len(init_report)
     }
 
     final_report = pd.DataFrame(data)

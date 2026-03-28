@@ -158,7 +158,7 @@ def _esummary_batch(pmids: List[str], api_key: Optional[str] = None) -> List[Dic
             continue
 
         # Publication date
-        pub_date_str = art.get("pubdate", art.get("epubdate", ""))
+        pub_date_str = art.get("pubdate", None)
         year: Optional[int] = None
         try:
             year = int(pub_date_str[:4])
@@ -250,6 +250,7 @@ async def search_pubmed_async(
     chunk_size_months: int = 6,
     api_key: Optional[str] = None,
     progress_callback=None,
+    time_tracker=None,
 ) -> Tuple[List[Dict], List[Dict]]:
     """Search PubMed for articles in a journal within a year range.
 
@@ -344,7 +345,13 @@ async def search_pubmed_async(
         total_batches = (len(pmids) + batch_size - 1) // batch_size
         print(f"Fetching metadata: batch {batch_num}/{total_batches} ({len(batch)} articles)...", flush=True)
 
+        batch_start_time = datetime.now()
         records = await asyncio.to_thread(_esummary_batch, batch, api_key)
+        batch_end_time = datetime.now()
+        
+        if time_tracker:
+            duration = (batch_end_time - batch_start_time).total_seconds()
+            time_tracker.record_metadata(batch_num, len(batch), batch_start_time, batch_end_time, duration)
 
         for rec in records:
             all_articles.append(rec)
@@ -361,8 +368,8 @@ async def search_pubmed_async(
     print(
         f"\nPubMed: {len(all_articles)} articles total "
         f"({len(oa_articles)} open-access, "
-        f"({len(pa_articles)} public-access, "
-        f"{len(all_articles) - len(oa_articles) - len(pa_articles)} closed-access)",
+        f"{len(pa_articles)} public-access, "
+        f"{len(all_articles) - len(pa_articles)} closed-access)",
         flush=True,
     )
     return all_articles, oa_articles, pa_articles
@@ -379,6 +386,7 @@ async def crawl_pubmed_async(
     api_key: Optional[str] = None,
     save_csv: bool = True,
     progress_callback=None,
+    time_tracker=None,
 ) -> Tuple[List[Dict], List[Dict]]:
     """Crawl PubMed for articles and save a CSV summary.
 
@@ -411,6 +419,7 @@ async def crawl_pubmed_async(
         chunk_size_months=chunk_size_months,
         api_key=api_key,
         progress_callback=progress_callback,
+        time_tracker=time_tracker,
     )
 
     if save_csv and all_articles:
@@ -451,6 +460,7 @@ async def crawl_pubmed_journals_async(
     api_key: Optional[str] = None,
     save_csv: bool = True,
     progress_callback=None,
+    time_tracker=None,
 ) -> Tuple[List[Dict], List[Dict]]:
     """Crawl multiple PubMed journals and aggregate results.
 
@@ -476,7 +486,7 @@ async def crawl_pubmed_journals_async(
     pa_articles: List[Dict] = []
 
     for journal in journals:
-        print(f"\n{'─'*60}", flush=True)
+        print(f"\n{'-'*60}", flush=True)
         jnl_folder = os.path.join(out_folder, _safe_name(journal))
         arts, oa, pa = await crawl_pubmed_async(
             journal=journal,
@@ -489,6 +499,7 @@ async def crawl_pubmed_journals_async(
             api_key=api_key,
             save_csv=save_csv,
             progress_callback=progress_callback,
+            time_tracker=time_tracker,
         )
         all_articles.extend(arts)
         oa_articles.extend(oa)
@@ -504,7 +515,7 @@ async def crawl_pubmed_journals_async(
     #     )
 
     print(
-        f"\n PubMed crawl complete: {len(all_articles)} articles across {len(journals)} journal(s) "
+        f"\nPubMed crawl complete: {len(all_articles)} articles across {len(journals)} journal(s) "
         f"({len(oa_articles)} OA)",
         flush=True,
     )
