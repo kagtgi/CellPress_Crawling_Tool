@@ -2,19 +2,22 @@ import argparse
 import asyncio
 import os
 import traceback
+from datetime import datetime
 from playwright.async_api import async_playwright
 try:
     from .crawl_pubmed_async import crawl_pubmed_journals_async
     from .utils.common import read_pmc_ids_from_file, save_json_to_file
     from .utils.text import extract_fulltext_pubmed_as_json
     from .utils.pdf import download_pdf_pubmed
+    from .utils.time_measurement import TimeTracker
 except ImportError:
     from src.papers_crawler.pubmed.crawl_pubmed_async import crawl_pubmed_journals_async
     from src.papers_crawler.pubmed.utils.common import read_pmc_ids_from_file, save_json_to_file
     from src.papers_crawler.pubmed.utils.text import extract_fulltext_pubmed_as_json
     from src.papers_crawler.pubmed.utils.pdf import download_pdf_pubmed
+    from src.papers_crawler.pubmed.utils.time_measurement import TimeTracker
 
-async def process_pmc_articles(pmc_ids, pdf_output=None, json_output=None):
+async def process_pmc_articles(pmc_ids, pdf_output=None, json_output=None, time_tracker=None):
     if not pdf_output and not json_output:
         print("No output directories specified. Use --pdf-output or --json-output.")
         return
@@ -43,10 +46,14 @@ async def process_pmc_articles(pmc_ids, pdf_output=None, json_output=None):
                     if os.path.exists(json_path) and os.path.getsize(json_path) > 100:
                         print(f"JSON already exists: {json_path}")
                     else:
+                        start_time = datetime.now()
                         json_data = await extract_fulltext_pubmed_as_json(page, pmc_id)
                         if json_data:
                             await save_json_to_file(json_data, json_path)
                             print(f"Saved JSON: {json_path}")
+                            if time_tracker:
+                                end_time = datetime.now()
+                                time_tracker.record_fulltext(pmc_id, start_time, end_time, (end_time - start_time).total_seconds())
                         else:
                             print(f"Failed to extract JSON for {pmc_id}")
 
@@ -56,9 +63,13 @@ async def process_pmc_articles(pmc_ids, pdf_output=None, json_output=None):
                     if os.path.exists(pdf_path) and os.path.getsize(pdf_path) > 1000:
                         print(f"PDF already exists: {pdf_path}")
                     else:
+                        start_time = datetime.now()
                         result = await download_pdf_pubmed(page, pmc_id, pdf_output)
                         if result:
                             print(f"Downloaded PDF: {result}")
+                            if time_tracker:
+                                end_time = datetime.now()
+                                time_tracker.record_pdf(pmc_id, start_time, end_time, (end_time - start_time).total_seconds())
                         else:
                             print(f"Failed to download PDF for {pmc_id}")
                             
@@ -88,8 +99,15 @@ async def main():
     parser.add_argument("--journals", nargs="+", help="Space-separated journal names")
     parser.add_argument("--keywords", type=str, default="", help="Additional search keywords")
     parser.add_argument("--api-key", type=str, default=None, help="NCBI API key for higher rate limits")
+    parser.add_argument("--time-measurement-output", type=str, default=None, help="Directory to save time measurement CSV files")
     
     args = parser.parse_args()
+    
+    time_tracker = None
+    if args.time_measurement_output:
+        timestamp_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+        time_output_dir = os.path.join(args.time_measurement_output, timestamp_id)
+        time_tracker = TimeTracker(time_output_dir)
     
     pmc_ids = []
     
@@ -105,7 +123,7 @@ async def main():
         print(f"Found {len(pmc_ids)} PMC IDs in the input file.")
         
         # If input file is used, process the PMIDs immediately to fetch PDF/JSON
-        await process_pmc_articles(pmc_ids, args.pdf_output, args.json_output)
+        await process_pmc_articles(pmc_ids, args.pdf_output, args.json_output, time_tracker)
     else:
         if not args.journals:
             print("Error: Please provide at least one journal with --journals when --use-input-file is 'n'")
@@ -121,16 +139,18 @@ async def main():
             chunk_size_months=args.chunk_size,
             limit_per_journal=args.max_papers,
             api_key=args.api_key,
+            time_tracker=time_tracker,
         )
         
         pmc_ids = [art['pmc_id'] for art in oa_articles if art.get('pmc_id')]
+        print(f"Found {len(all_articles)} articles from search.")
         print(f"Found {len(pa_articles)} public-access articles with PMC IDs from search.")
         print(f"Found {len(oa_articles)} open-access articles from search.")
         
         # Only process if pdf_output or json_output is specified
         if args.pdf_output or args.json_output:
             if pmc_ids:
-                await process_pmc_articles(pmc_ids, args.pdf_output, args.json_output)
+                await process_pmc_articles(pmc_ids, args.pdf_output, args.json_output, time_tracker)
             else:
                 print("No open-access articles or PMC IDs found to process full text.")
 
