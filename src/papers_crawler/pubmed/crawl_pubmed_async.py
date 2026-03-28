@@ -18,6 +18,7 @@ import traceback
 import zipfile
 from datetime import datetime
 import xml.etree.ElementTree as ET
+import re
 from typing import Dict, List, Optional, Tuple
 
 import requests
@@ -28,7 +29,6 @@ logger = logging.getLogger(__name__)
 # NCBI E-utilities base URL
 # ---------------------------------------------------------------------------
 _EUTILS = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
-
 # NCBI asks for a polite delay between requests when not using an API key.
 # 3 requests/second without key, 10/second with key.
 _REQUEST_DELAY = 0.5  # seconds
@@ -56,6 +56,78 @@ def _esearch(query: str, retmax: int = 10_000, api_key: Optional[str] = None) ->
     return data.get("esearchresult", {}).get("idlist", [])
 
 
+def fetch_abstracts_batch(pmids: List[str], api_key: Optional[str] = None) -> Dict[str, str]:
+    """
+    Fetches abstracts for a list of PMIDs in a SINGLE network request.
+    Returns a dictionary mapping PMID -> Formatted Abstract String.
+    """
+    if not pmids:
+        return {}
+
+    url = f"{_EUTILS}/efetch.fcgi"
+    params = {
+        "db": "pubmed",
+        "id": ",".join(pmids),
+        "retmode": "xml"
+    }
+    if api_key:
+        params["api_key"] = api_key
+
+    try:
+        resp = requests.get(url, params=params, timeout=60)
+        resp.raise_for_status()
+        xml_data = resp.text
+
+        # print(f"\n XML response: {xml_data}")
+
+        # This safely converts them to ^{content} and _{content} and prevents 
+        # ElementTree from truncating mixed-content sentences.
+        xml_data = re.sub(r'<sup\b[^>]*>(.*?)</sup>', r'^{\1}', xml_data, flags=re.IGNORECASE | re.DOTALL)
+        xml_data = re.sub(r'<sub\b[^>]*>(.*?)</sub>', r'_{\1}', xml_data, flags=re.IGNORECASE | re.DOTALL)
+        
+        # Strip out any other rogue HTML formatting tags sometimes found in PubMed abstracts (like <i>, <b>)
+        xml_data = re.sub(r'<i\b[^>]*>(.*?)</i>', r'\1', xml_data, flags=re.IGNORECASE | re.DOTALL)
+        xml_data = re.sub(r'<b\b[^>]*>(.*?)</b>', r'\1', xml_data, flags=re.IGNORECASE | re.DOTALL)
+        xml_data = xml_data.replace('\u2009', ' ')
+
+        root = ET.fromstring(xml_data)
+        abstracts_dict = {}
+
+        # Iterate through every article returned in the XML
+        for article in root.findall('.//PubmedArticle'):
+            # Safely grab the PMID
+            pmid_node = article.find('.//PMID')
+            if pmid_node is None or not pmid_node.text:
+                continue
+            current_pmid = pmid_node.text.strip()
+
+            # print(f"        + Extract the abstract of {current_pmid}", flush=True)
+
+            # Find the abstract sections
+            abstract_sections = []
+            for abstract_text in article.findall('.//AbstractText'):
+                label = abstract_text.attrib.get('Label')
+                
+                # .itertext() safely grabs all text inside the node
+                text_content = "".join(abstract_text.itertext()).strip()
+                
+                if not text_content:
+                    continue
+                
+                if label:
+                    abstract_sections.append(f"{label}: {text_content}")
+                else:
+                    abstract_sections.append(text_content)
+
+            # Join all sections with a newline and save to our dictionary
+            abstracts_dict[current_pmid] = "\n".join(abstract_sections)
+
+        return abstracts_dict
+
+    except Exception as e:
+        logger.error(f"Failed to batch fetch abstracts: {e}")
+        return {}
+
 def _esummary_batch(pmids: List[str], api_key: Optional[str] = None) -> List[Dict]:
     """Fetch article summaries for a list of PMIDs (max 500 at a time)."""
     if not pmids:
@@ -72,6 +144,9 @@ def _esummary_batch(pmids: List[str], api_key: Optional[str] = None) -> List[Dic
     resp = requests.get(f"{_EUTILS}/esummary.fcgi", params=params, timeout=60)
     resp.raise_for_status()
     data = resp.json()
+
+    print(f"    - Fetching abstracts for {len(pmids)} PMIDs...", flush=True)
+    abstracts_map = fetch_abstracts_batch(pmids, api_key)
 
     results: List[Dict] = []
     result_dict = data.get("result", {})
@@ -106,6 +181,7 @@ def _esummary_batch(pmids: List[str], api_key: Optional[str] = None) -> List[Dic
 
         # Checking if the paper is open-access using Open Access App Service API
         is_oa = None
+        is_pa = bool(pmc_id)
 
         if not pmc_id:
             is_oa = False
@@ -136,6 +212,8 @@ def _esummary_batch(pmids: List[str], api_key: Optional[str] = None) -> List[Dic
             else:
                 is_oa = True
 
+        article_abstract = abstracts_map.get(uid, "")
+
         results.append(
             {
                 "pmid": uid,
@@ -143,12 +221,14 @@ def _esummary_batch(pmids: List[str], api_key: Optional[str] = None) -> List[Dic
                 "authors": ", ".join(
                     a.get("name", "") for a in art.get("authors", [])
                 ),
+                "abstract": article_abstract,
                 "journal": art.get("fulljournalname", art.get("source", "")),
                 "pub_date": pub_date_str,
                 "year": year,
                 "doi": doi,
                 "pmc_id": pmc_id,
                 "open_access": is_oa,
+                "public_access": is_pa,
                 "url": f"https://pubmed.ncbi.nlm.nih.gov/{uid}/",
                 "pmc_url": f"https://www.ncbi.nlm.nih.gov/pmc/articles/{pmc_id}/" if pmc_id else "",
             }
@@ -197,6 +277,7 @@ async def search_pubmed_async(
                 "pmid":        str,
                 "title":       str,
                 "authors":     str,
+                "abstract":    str,
                 "journal":     str,
                 "pub_date":    str,
                 "year":        int | None,
@@ -254,6 +335,7 @@ async def search_pubmed_async(
     # ── Step 2: esummary – get metadata in batches of 200 ───────────────────
     all_articles: List[Dict] = []
     oa_articles: List[Dict] = []
+    pa_articles: List[Dict] = []
     batch_size = 200
 
     for i in range(0, len(pmids), batch_size):
@@ -268,6 +350,8 @@ async def search_pubmed_async(
             all_articles.append(rec)
             if rec["open_access"]:
                 oa_articles.append(rec)
+            if rec["public_access"]:
+                pa_articles.append(rec)
             if progress_callback:
                 progress_callback(rec)
 
@@ -277,10 +361,11 @@ async def search_pubmed_async(
     print(
         f"\nPubMed: {len(all_articles)} articles total "
         f"({len(oa_articles)} open-access, "
-        f"{len(all_articles) - len(oa_articles)} fee-based)",
+        f"({len(pa_articles)} public-access, "
+        f"{len(all_articles) - len(oa_articles) - len(pa_articles)} closed-access)",
         flush=True,
     )
-    return all_articles, oa_articles
+    return all_articles, oa_articles, pa_articles
 
 
 async def crawl_pubmed_async(
@@ -317,7 +402,7 @@ async def crawl_pubmed_async(
     """
     os.makedirs(out_folder, exist_ok=True)
 
-    all_articles, oa_articles = await search_pubmed_async(
+    all_articles, oa_articles, pa_articles = await search_pubmed_async(
         journal=journal,
         year_from=year_from,
         year_to=year_to,
@@ -341,8 +426,14 @@ async def crawl_pubmed_async(
                 os.path.join(out_folder, f"pubmed_oa_{timestamp}.csv"),
                 label="open-access articles",
             )
+        if pa_articles:
+            _write_csv(
+                pa_articles,
+                os.path.join(out_folder, f"pubmed_pa_{timestamp}.csv"),
+                label="public-access articles"
+            )
 
-    return all_articles, oa_articles
+    return all_articles, oa_articles, pa_articles
 
 
 # ---------------------------------------------------------------------------
@@ -382,11 +473,12 @@ async def crawl_pubmed_journals_async(
     os.makedirs(out_folder, exist_ok=True)
     all_articles: List[Dict] = []
     oa_articles: List[Dict] = []
+    pa_articles: List[Dict] = []
 
     for journal in journals:
         print(f"\n{'─'*60}", flush=True)
         jnl_folder = os.path.join(out_folder, _safe_name(journal))
-        arts, oa = await crawl_pubmed_async(
+        arts, oa, pa = await crawl_pubmed_async(
             journal=journal,
             year_from=year_from,
             year_to=year_to,
@@ -400,6 +492,7 @@ async def crawl_pubmed_journals_async(
         )
         all_articles.extend(arts)
         oa_articles.extend(oa)
+        pa_articles.extend(pa)
 
     # Aggregate CSV
     # if save_csv and all_articles:
@@ -415,7 +508,7 @@ async def crawl_pubmed_journals_async(
         f"({len(oa_articles)} OA)",
         flush=True,
     )
-    return all_articles, oa_articles
+    return all_articles, oa_articles, pa_articles
 
 
 # ---------------------------------------------------------------------------
@@ -425,7 +518,7 @@ async def crawl_pubmed_journals_async(
 def _write_csv(articles: List[Dict], path: str, label: str = "") -> None:
     """Write article list to a CSV file."""
     fieldnames = [
-        "pmid", "title", "authors", "journal", "pub_date", "year",
+        "pmid", "title", "authors", "abstract", "journal", "pub_date", "year",
         "doi", "open_access", "pmc_id", "url", "pmc_url",
     ]
     try:
