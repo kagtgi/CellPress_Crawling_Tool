@@ -175,6 +175,7 @@ python -m papers_crawler.pubmed.crawl_pubmed --use-input-file y \
 - `--chunk-size`: Chunk size in months for splitting time ranges to bypass PubMed's query limits (default: 6).
 - `--keywords`: Optional extra search terms for more specific scraping.
 - `--api-key`: Optional NCBI API key for higher rate limits (10 req/s vs 3 req/s).
+- `--time-measurement-output`: Optional option refering to the directory to save time measurement CSV files.
 
 **Output:**
 
