@@ -31,7 +31,7 @@ def main():
         "interest?": [None] * len(init_report),
         "open_access": init_report["open_access"],
         "public_access": init_report["public_access"],
-        "category": [None] * len(init_report)
+        "categories": init_report["categories"] if "categories" in init_report.columns else [None] * len(init_report)
     }
 
     final_report = pd.DataFrame(data)

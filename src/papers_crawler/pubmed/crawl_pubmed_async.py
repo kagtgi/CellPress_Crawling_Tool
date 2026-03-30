@@ -56,10 +56,10 @@ def _esearch(query: str, retmax: int = 10_000, api_key: Optional[str] = None) ->
     return data.get("esearchresult", {}).get("idlist", [])
 
 
-def fetch_abstracts_batch(pmids: List[str], api_key: Optional[str] = None) -> Dict[str, str]:
+def fetch_abstracts_batch(pmids: List[str], api_key: Optional[str] = None) -> Dict[str, Dict]:
     """
-    Fetches abstracts for a list of PMIDs in a SINGLE network request.
-    Returns a dictionary mapping PMID -> Formatted Abstract String.
+    Fetches abstracts and MeSH categories for a list of PMIDs in a SINGLE network request.
+    Returns a dictionary mapping PMID -> {"abstract": String, "categories": List[str]}.
     """
     if not pmids:
         return {}
@@ -119,8 +119,28 @@ def fetch_abstracts_batch(pmids: List[str], api_key: Optional[str] = None) -> Di
                 else:
                     abstract_sections.append(text_content)
 
+            # Extract MeSH categories
+            mesh_headings = []
+            mesh_list = article.find('.//MeshHeadingList')
+            if mesh_list is not None:
+                default_headings = []
+                for mesh in mesh_list.findall('.//MeshHeading'):
+                    desc = mesh.find('.//DescriptorName')
+                    if desc is not None and desc.text:
+                        major_topic = desc.attrib.get('MajorTopicYN', 'N')
+                        text = desc.text.strip()
+                        default_headings.append(text)
+                        if major_topic == 'Y':
+                            mesh_headings.append(text)
+                
+                if not mesh_headings:
+                    mesh_headings = default_headings[:3]
+
             # Join all sections with a newline and save to our dictionary
-            abstracts_dict[current_pmid] = "\n".join(abstract_sections)
+            abstracts_dict[current_pmid] = {
+                "abstract": "\n".join(abstract_sections),
+                "categories": mesh_headings
+            }
 
         return abstracts_dict
 
@@ -212,7 +232,9 @@ def _esummary_batch(pmids: List[str], api_key: Optional[str] = None) -> List[Dic
             else:
                 is_oa = True
 
-        article_abstract = abstracts_map.get(uid, "")
+        abstract_info = abstracts_map.get(uid, {})
+        article_abstract = abstract_info.get("abstract", "")
+        categories = abstract_info.get("categories", [])
 
         results.append(
             {
@@ -222,6 +244,7 @@ def _esummary_batch(pmids: List[str], api_key: Optional[str] = None) -> List[Dic
                     a.get("name", "") for a in art.get("authors", [])
                 ),
                 "abstract": article_abstract,
+                "categories": categories,
                 "journal": art.get("fulljournalname", art.get("source", "")),
                 "pub_date": pub_date_str,
                 "year": year,
@@ -529,14 +552,22 @@ async def crawl_pubmed_journals_async(
 def _write_csv(articles: List[Dict], path: str, label: str = "") -> None:
     """Write article list to a CSV file."""
     fieldnames = [
-        "pmid", "title", "authors", "abstract", "journal", "pub_date", "year",
+        "pmid", "title", "authors", "abstract", "categories", "journal", "pub_date", "year",
         "doi", "open_access", "public_access", "pmc_id", "url", "pmc_url",
     ]
     try:
         with open(path, "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore", restval="")
             writer.writeheader()
-            writer.writerows(articles)
+            
+            rows_to_write = []
+            for art in articles:
+                row = dict(art)
+                if isinstance(row.get('categories'), list):
+                    row['categories'] = ", ".join(row['categories'])
+                rows_to_write.append(row)
+                
+            writer.writerows(rows_to_write)
         size_kb = os.path.getsize(path) / 1024
         print(f"Saved {label} CSV ({len(articles)} rows, {size_kb:.1f} KB): {path}", flush=True)
     except Exception as e:
