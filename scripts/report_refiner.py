@@ -33,7 +33,7 @@ def main():
     # 2. Merge dataframes on the 'title' column (Outer Join)
     merged_df = pd.merge(
         df_final, 
-        df_dataset[['pmid', 'title', 'abstract', 'url', 'pmc_id', 'open_access', 'public_access']], 
+        df_dataset[['pmid', 'title', 'abstract', 'url', 'pmc_id', 'open_access', 'public_access', 'categories']], 
         on='title', 
         how='outer', 
         suffixes=('_final', '_dataset')
@@ -49,7 +49,7 @@ def main():
     # 3. Process each row sequentially
     for index, row in merged_df.iterrows():
         # Handle matching failures (if a title in the final CSV is completely missing from the dataset)
-        if pd.isna(row['open_access_dataset']) or pd.isna(row['public_access']):
+        if pd.isna(row.get('open_access_dataset')) or pd.isna(row.get('public_access')):
             print(f"❌ Error: Paper '{row['title']}' was not found in the dataset CSV.")
             sys.exit(1)
 
@@ -66,13 +66,15 @@ def main():
             # If both are False, or OA is True but PA is False, raise an exception and exit
             raise Exception(f"🔒 Closed-access paper detected: '{row['title']}'. Exiting program.")
 
-        # 🌟 THE FIX: Pandas split 'url' into 'url_final' and 'url_dataset'.
-        # Let's safely extract both.
+        # 🌟 THE UNIVERSAL FIX: Safely extract all columns that got split by the Pandas suffix!
+        # If the value exists in the final report, keep it. Otherwise, pull it from the dataset.
+        pmid_val = row.get('pmid_final') if pd.notna(row.get('pmid_final')) else row.get('pmid_dataset')
+        abstract_val = row.get('abstract_final') if pd.notna(row.get('abstract_final')) else row.get('abstract_dataset')
+        pmc_id_val = row.get('pmc_id_final') if pd.notna(row.get('pmc_id_final')) else row.get('pmc_id_dataset')
+
+        # Safe URL extraction
         url_final_val = row.get('url_final')
         url_dataset_val = row.get('url_dataset')
-
-        # Logic: Take the URL from the final result. If it's empty (like for newly appended missing papers), 
-        # try to grab it from the dataset!
         if pd.notna(url_final_val) and str(url_final_val).strip() != '':
             url_val = url_final_val
         elif pd.notna(url_dataset_val) and str(url_dataset_val).strip() != '':
@@ -80,20 +82,23 @@ def main():
         else:
             url_val = ''
 
-        # Handle NaN values for newly appended papers
+        # Extract interest value safely (This one wasn't split because it was only in the final report)
         interest_val = row['interest?'] if pd.notna(row.get('interest?')) else ''
-        category_val = row['category'] if pd.notna(row.get('category')) else ''
+        
+        # 🌟 CATEGORIES LOGIC: Completely replace the old 'category' with the dataset's 'categories'
+        # Because categories was split, we MUST use 'categories_dataset' to grab the new ones!
+        category_val = row.get('categories_dataset') if pd.notna(row.get('categories_dataset')) else ''
 
         # Construct the refined row
         refined_rows.append({
-            'pmid': row['pmid'],
+            'pmid': pmid_val,
             'title': row['title'],
-            'abstract': row['abstract'],
+            'abstract': abstract_val,
             'url': url_val,
-            'pmc_id': row['pmc_id'],
+            'pmc_id': pmc_id_val,
             'interest?': interest_val,
             'open_access': final_oa,
-            'category': category_val
+            'categories': category_val
         })
 
     # 4. Create the final dataframe
@@ -108,7 +113,7 @@ def main():
         'pmc_id', 
         'interest?', 
         'open_access', 
-        'category'
+        'categories' 
     ]
     
     # Filter to only keep columns that actually existed to prevent key errors
@@ -122,7 +127,7 @@ def main():
 
     # 6. Save the refined CSV
     refined_df.to_csv(args.output, index=False)
-    print(f"✅ Successfully refined the report! Original order preserved, and missing papers appended to the end. Saved to {args.output}")
+    print(f"✅ Successfully refined the report! Categories replaced, original order preserved, and missing papers appended to the end. Saved to {args.output}")
 
 if __name__ == "__main__":
     main()
