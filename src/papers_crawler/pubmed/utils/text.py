@@ -4,15 +4,22 @@ from datetime import datetime
 from typing import Dict, Optional
 
 from bs4 import BeautifulSoup
-from playwright.async_api import Page
+import httpx
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 logger = logging.getLogger(__name__)
 
-async def extract_fulltext_pubmed_as_json(page: Page, pmc_id: str) -> Optional[Dict]:
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+async def _download_text(client: httpx.AsyncClient, url: str) -> str:
+    response = await client.get(url)
+    response.raise_for_status()
+    return response.text
+
+async def extract_fulltext_pubmed_as_json(client: httpx.AsyncClient, pmc_id: str) -> Optional[Dict]:
     """Navigate to PMC article page and extract full text into JSON format identically to Nature.
     
     Args:
-        page: Playwright page object
+        client: httpx async client
         pmc_id: PMC ID (e.g. PMC8754117 or 8754117)
         
     Returns:
@@ -22,100 +29,123 @@ async def extract_fulltext_pubmed_as_json(page: Page, pmc_id: str) -> Optional[D
         if not pmc_id.upper().startswith("PMC"):
             pmc_id = f"PMC{pmc_id}"
             
-        url = f"https://www.ncbi.nlm.nih.gov/pmc/articles/{pmc_id}/"
-        logger.info(f"Navigating to PMC page: {url}")
+        id_numeric = pmc_id.replace('PMC', '')
+        url = f"https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=pmc&id={id_numeric}"
         
-        print(f"Loading page {url}...")
-        await page.goto(url, timeout=30000)
-        await page.wait_for_timeout(2000)
+        logger.info(f"Navigating to PMC E-utilities: {url}")
         
-        html = await page.content()
-        soup = BeautifulSoup(html, "html.parser")
+        print(f"Loading XML {url}...")
+        xml_content = await _download_text(client, url)
+        
+        soup = BeautifulSoup(xml_content, "html.parser")
 
-        print("HTML Got! Extract content...")
+        print("XML Got! Extract content...")
         
         json_data = {
-            "url": url,
+            "url": f"https://www.ncbi.nlm.nih.gov/pmc/articles/{pmc_id}/",
             "extracted_at": datetime.now().isoformat()
         }
         
-        # Remove navigation elements
-        for unwanted in soup.find_all(['nav', 'script', 'style', 'button', 'noscript', 'aside', 'footer', 'header']):
-            unwanted.decompose()
-            
         # Title
-        title_elem = soup.find(class_='content-title') or soup.find("h1")
+        title_elem = soup.find('article-title')
         if title_elem:
-            json_data["title"] = title_elem.get_text(strip=True)
-            
+            json_data["title"] = title_elem.get_text(separator=' ', strip=True)
+
         # Authors
-        contrib_groups = soup.find_all(class_='contrib-group')
-        if contrib_groups:
-            authors = []
-            for cg in contrib_groups:
-                for author in cg.find_all(class_='contrib-group-name') or cg.find_all('a', class_='name'):
-                    if author.get_text(strip=True):
-                        authors.append(author.get_text(strip=True))
-            if authors:
-                json_data["authors"] = ", ".join(dict.fromkeys(authors)) # unique preserve order
-                
+        contrib_groups = soup.find_all('contrib-group')
+        authors = []
+        for group in contrib_groups:
+            contrib_list = group.find_all('contrib', attrs={'contrib-type': 'author'})
+            for contrib in contrib_list:
+                name_elem = contrib.find('name')
+                if name_elem:
+                    surname = name_elem.find('surname')
+                    given_names = name_elem.find('given-names')
+                    if surname and given_names:
+                        authors.append(f"{given_names.get_text(strip=True)} {surname.get_text(strip=True)}")
+        if authors:
+            json_data["authors"] = ", ".join(dict.fromkeys(authors)) # unique preserve order
+
         # DOI
-        doi_meta = soup.find('meta', {'name': 'citation_doi'})
-        if doi_meta:
-            json_data["doi"] = doi_meta.get("content", "")
-            
+        doi_elem = soup.find('article-id', attrs={'pub-id-type': 'doi'})
+        if doi_elem:
+            json_data["doi"] = doi_elem.get_text(strip=True)
+
         # Date
-        date_meta = soup.find('meta', {'name': 'citation_date'})
-        if date_meta:
-            json_data["publication_date"] = date_meta.get("content", "")
-            
+        pub_dates = soup.find_all('pub-date')
+        if pub_dates:
+            pub_date = pub_dates[-1] # Usually the most relevant date
+            year = pub_date.find('year')
+            month = pub_date.find('month')
+            day = pub_date.find('day')
+            date_parts = []
+            for part in (year, month, day):
+                if part:
+                    date_parts.append(part.get_text(strip=True))
+            if date_parts:
+                json_data["publication_date"] = "-".join(date_parts)
+
         # Abstract
-        abstract_section = soup.find('div', class_='abstract') or soup.find('div', id='abstract')
-        if abstract_section:
-            paras = [p.get_text(" ", strip=True) for p in abstract_section.find_all('p')]
-            json_data["Abstract"] = "\n\n".join([p for p in paras if p])
-            
-        # Main text sections - PMC uses div.tsec
-        # Sometimes sections are nested, but top-level .tsec is a good heuristic
-        tsec_elements = soup.find_all('div', class_='tsec')
-        for sec in tsec_elements:
-            header = sec.find(['h2', 'h3'])
-            if not header:
+        abstract_elems = soup.find_all('abstract')
+        for idx, abstract in enumerate(abstract_elems):
+            abstract_text = abstract.get_text(" ", strip=True)
+            if abstract_text:
+                key = f'Abstract_{idx+1}' if len(abstract_elems) > 1 else 'Abstract'
+                json_data[key] = abstract_text
+
+        # Main Texts - PMC uses <sec>
+        sec_elements = soup.find_all('sec')
+        for sec in sec_elements:
+            header_elem = sec.find('title', recursive=False)
+            if not header_elem:
                 continue
                 
-            sec_title = header.get_text(strip=True)
+            sec_title = header_elem.get_text(strip=True)
             if not sec_title or sec_title.lower() in ['abstract', 'acknowledgments', 'references', 'abbreviations']:
                 continue
                 
             sec_text = []
-            for child in sec.find_all(['p', 'h3', 'h4', 'h5']):
-                child_text = child.get_text(" ", strip=True)
-                if not child_text or child.name in ['h2']:
-                    continue # Skip the main header
-                if child.name in ['h3', 'h4', 'h5']:
-                    sec_text.append(f"\n## {child_text}\n")
-                else:
-                    sec_text.append(child_text)
-                    
+            for child in sec.find_all(['p', 'sec'], recursive=False):
+                if child.name == 'p':
+                    text_content = child.get_text(" ", strip=True)
+                    if text_content:
+                        sec_text.append(text_content)
+                elif child.name == 'sec':
+                    # Handle nested section titles
+                    nested_title = child.find('title')
+                    if nested_title:
+                        sec_text.append(f"\n## {nested_title.get_text(strip=True)}\n")
+                    # Handle paragraphs within nested section
+                    for nested_p in child.find_all('p', recursive=False):
+                        nested_text = nested_p.get_text(" ", strip=True)
+                        if nested_text:
+                            sec_text.append(nested_text)
+                            
             if sec_text:
+                # Handle duplicated heading keys
+                base_title = sec_title
+                counter = 1
+                while sec_title in json_data:
+                    sec_title = f"{base_title}_{counter}"
+                    counter += 1
                 json_data[sec_title] = "\n\n".join(sec_text)
-                
+
         # Figures
-        figures = soup.find_all('div', class_='fig') or soup.find_all('figure')
+        figures = soup.find_all('fig')
         if figures:
             fig_data = []
             for idx, fig in enumerate(figures, 1):
-                caption = fig.find('div', class_='caption') or fig.find('figcaption') or fig.find('div', class_='fig-caption')
+                caption = fig.find('caption')
                 if caption:
                     fig_data.append(f"{idx}. {caption.get_text(' ', strip=True)}")
             if fig_data:
                 json_data["Figures"] = "\n\n".join(fig_data)
-                
+
         # References
-        ref_list = soup.find('div', id='reference-list') or soup.find('div', class_='ref-list')
+        ref_list = soup.find('ref-list')
         if ref_list:
             refs = []
-            for idx, ref in enumerate(ref_list.find_all('div', class_='ref-cit-group') or ref_list.find_all('li'), 1):
+            for idx, ref in enumerate(ref_list.find_all('ref'), 1):
                 refs.append(f"{idx}. {ref.get_text(' ', strip=True)}")
             if refs:
                 json_data["References"] = "\n\n".join(refs)

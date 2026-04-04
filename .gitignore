@@ -8,7 +8,12 @@ __pycache__
 .vscode
 
 implement-tasks/*
-# testing/*
+testing/nature/*
+testing/cell/*
+testing/pubmed/time_measurement/*
+testing/pubmed/json/*
+testing/pubmed/pdf/*
+testing/pubmed/csv/*
 final-report/*
 data/*
 scripts/tmp/*

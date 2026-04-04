@@ -3,7 +3,7 @@ import asyncio
 import os
 import traceback
 from datetime import datetime
-from playwright.async_api import async_playwright
+import httpx
 try:
     from .crawl_pubmed_async import crawl_pubmed_journals_async
     from .utils.common import read_pmc_ids_from_file, yield_pmc_ids_from_file, save_json_to_file
@@ -28,14 +28,15 @@ async def process_pmc_articles(pmc_ids, pdf_output=None, json_output=None, time_
 
     print(f"Starting to process {len(pmc_ids)} open-access articles.")
 
-    async with async_playwright() as p:
-        browser = await p.firefox.launch(headless=True)
-        context = await browser.new_context(
-            accept_downloads=True,
-            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:115.0) Gecko/20100101 Firefox/115.0',
-        )
-        page = await context.new_page()
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:115.0) Gecko/20100101 Firefox/115.0',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
+    }
+    limits = httpx.Limits(max_connections=10)
+    timeout = httpx.Timeout(120.0, connect=30.0)
 
+    async with httpx.AsyncClient(headers=headers, timeout=timeout, limits=limits, follow_redirects=True) as client:
         for idx, pmc_id in enumerate(pmc_ids, 1):
             print(f"\n[{idx}/{len(pmc_ids)}] Processing {pmc_id}...")
             
@@ -47,7 +48,7 @@ async def process_pmc_articles(pmc_ids, pdf_output=None, json_output=None, time_
                         print(f"JSON already exists: {json_path}")
                     else:
                         start_time = datetime.now()
-                        json_data = await extract_fulltext_pubmed_as_json(page, pmc_id)
+                        json_data = await extract_fulltext_pubmed_as_json(client, pmc_id)
                         if json_data:
                             await save_json_to_file(json_data, json_path)
                             print(f"Saved JSON: {json_path}")
@@ -64,7 +65,7 @@ async def process_pmc_articles(pmc_ids, pdf_output=None, json_output=None, time_
                         print(f"PDF already exists: {pdf_path}")
                     else:
                         start_time = datetime.now()
-                        result = await download_pdf_pubmed(page, pmc_id, pdf_output)
+                        result = await download_pdf_pubmed(client, pmc_id, pdf_output)
                         if result:
                             print(f"Downloaded PDF: {result}")
                             if time_tracker:
@@ -78,10 +79,6 @@ async def process_pmc_articles(pmc_ids, pdf_output=None, json_output=None, time_
                 traceback.print_exc()
 
             await asyncio.sleep(2)  # Polite delay
-
-        await page.close()
-        await context.close()
-        await browser.close()
         
 async def main():
     parser = argparse.ArgumentParser(description="Crawl PubMed papers metadata and fulltext (JSON/PDF)")

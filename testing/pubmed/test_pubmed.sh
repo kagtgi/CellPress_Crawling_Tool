@@ -26,8 +26,8 @@ export PYTHONIOENCODING="utf-8"
 python -m papers_crawler.pubmed.crawl_pubmed \
     --journals "Nature" \
     --year-from 2025 --year-to 2025 \
-    --out-folder ../../testing/pubmed/csv \
+    --out-folder d:/FUV/papersCrawler/testing/pubmed/csv \
     --chunk-size 6 \
-    --batch-size 10 \
-    --time-measurement-output ../../testing/pubmed/time_measurement 
+    --batch-size 100 \
+    --time-measurement-output d:/FUV/papersCrawler/testing/pubmed/time_measurement 
 echo "PubMed crawler test completed."
