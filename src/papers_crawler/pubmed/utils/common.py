@@ -63,3 +63,49 @@ def read_pmc_ids_from_file(filepath: str) -> List[str]:
     except Exception as e:
         logger.error(f"Failed to read PMC IDs from {filepath}: {e}")
         return []
+
+def yield_pmc_ids_from_file(filepath: str, batch_size: int):
+    """Reads PMC IDs from a CSV, Excel, or JSONL file and yields batches."""
+    ext = os.path.splitext(filepath)[1].lower()
+    try:
+        if ext == '.csv':
+            for chunk in pd.read_csv(filepath, chunksize=batch_size):
+                if 'pmc_id' in chunk.columns:
+                    pmc_ids = chunk['pmc_id'].dropna().astype(str).tolist()
+                    yield _normalize_pmc_ids(pmc_ids)
+        elif ext in ['.xls', '.xlsx']:
+            df = pd.read_excel(filepath)
+            if 'pmc_id' in df.columns:
+                for start_idx in range(0, len(df), batch_size):
+                    end_idx = min(start_idx + batch_size, len(df))
+                    chunk = df.iloc[start_idx:end_idx]
+                    pmc_ids = chunk['pmc_id'].dropna().astype(str).tolist()
+                    yield _normalize_pmc_ids(pmc_ids)
+        elif ext == '.jsonl':
+            with open(filepath, 'r', encoding='utf-8') as f:
+                pmc_ids = []
+                for line in f:
+                    if not line.strip(): continue
+                    try:
+                        data = json.loads(line)
+                        if 'pmc_id' in data and data['pmc_id']:
+                            pmc_ids.append(str(data['pmc_id']))
+                            if len(pmc_ids) >= batch_size:
+                                yield _normalize_pmc_ids(pmc_ids)
+                                pmc_ids = []
+                    except json.JSONDecodeError:
+                        continue
+                if pmc_ids:
+                    yield _normalize_pmc_ids(pmc_ids)
+    except Exception as e:
+        logger.error(f"Failed to read PMC IDs from {filepath}: {e}")
+
+def _normalize_pmc_ids(pmc_ids: List[str]) -> List[str]:
+    normalized = []
+    for pmid in pmc_ids:
+        p = pmid.strip()
+        if not p: continue
+        if not p.upper().startswith('PMC'):
+            p = 'PMC' + p
+        normalized.append(p.upper())
+    return normalized

@@ -15,6 +15,7 @@ async def main():
     parser.add_argument("--journal-slugs", nargs="+", help="Space-separated journal identifiers")
     parser.add_argument("--use-input-file", type=str, choices=["y", "n"], default="n", help="Whether to use an input file (y/n)")
     parser.add_argument("--input-file", type=str, default=None, help="Path to the input file (CSV/Excel/JSONL) containing URLs")
+    parser.add_argument("--batch-size", type=int, default=100, help="Batch size for processing input files")
     
     args = parser.parse_args()
     
@@ -30,7 +31,9 @@ async def main():
             input_file=args.input_file,
             out_folder=args.json_output,
             pdf_out_folder=args.pdf_output,
+            batch_size=args.batch_size,
         )
+
     else:
         if not args.journal_slugs:
             print("Please provide at least one journal slug with --journal-slugs")

@@ -6,13 +6,13 @@ from datetime import datetime
 from playwright.async_api import async_playwright
 try:
     from .crawl_pubmed_async import crawl_pubmed_journals_async
-    from .utils.common import read_pmc_ids_from_file, save_json_to_file
+    from .utils.common import read_pmc_ids_from_file, yield_pmc_ids_from_file, save_json_to_file
     from .utils.text import extract_fulltext_pubmed_as_json
     from .utils.pdf import download_pdf_pubmed
     from .utils.time_measurement import TimeTracker
 except ImportError:
     from src.papers_crawler.pubmed.crawl_pubmed_async import crawl_pubmed_journals_async
-    from src.papers_crawler.pubmed.utils.common import read_pmc_ids_from_file, save_json_to_file
+    from src.papers_crawler.pubmed.utils.common import read_pmc_ids_from_file, yield_pmc_ids_from_file, save_json_to_file
     from src.papers_crawler.pubmed.utils.text import extract_fulltext_pubmed_as_json
     from src.papers_crawler.pubmed.utils.pdf import download_pdf_pubmed
     from src.papers_crawler.pubmed.utils.time_measurement import TimeTracker
@@ -87,6 +87,7 @@ async def main():
     parser = argparse.ArgumentParser(description="Crawl PubMed papers metadata and fulltext (JSON/PDF)")
     parser.add_argument("--use-input-file", type=str, choices=['y', 'n'], default='n', help="Use input file to provide PMC IDs")
     parser.add_argument("--input-file", type=str, help="Path to input file (CSV, Excel, JSONL)")
+    parser.add_argument("--batch-size", type=int, default=100, help="Batch size for processing input files")
     parser.add_argument("--pdf-output", type=str, help="Directory to save downloaded PDFs")
     parser.add_argument("--json-output", type=str, help="Directory to save extracted JSON files")
     
@@ -100,12 +101,16 @@ async def main():
     parser.add_argument("--keywords", type=str, default="", help="Additional search keywords")
     parser.add_argument("--api-key", type=str, default=None, help="NCBI API key for higher rate limits")
     parser.add_argument("--time-measurement-output", type=str, default=None, help="Directory to save time measurement CSV files")
+    parser.add_argument("--process-id", type=str, default=None, help="Process ID to identify the crawling task")
     
     args = parser.parse_args()
     
     time_tracker = None
     if args.time_measurement_output:
-        timestamp_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+        if args.process_id:
+            timestamp_id = args.process_id
+        else:
+            timestamp_id = datetime.now().strftime("%Y%m%d_%H%M%S")
         time_output_dir = os.path.join(args.time_measurement_output, timestamp_id)
         time_tracker = TimeTracker(time_output_dir)
     
@@ -115,22 +120,29 @@ async def main():
         if not args.input_file:
             print("Error: --input-file is required when --use-input-file is 'y'")
             return
-        print(f"Reading PMC IDs from {args.input_file}...")
-        pmc_ids = read_pmc_ids_from_file(args.input_file)
-        if not pmc_ids:
+        print(f"Reading PMC IDs from {args.input_file} in batches of {args.batch_size}...")
+        
+        found_any = False
+        for pmc_ids_batch in yield_pmc_ids_from_file(args.input_file, args.batch_size):
+            if pmc_ids_batch:
+                found_any = True
+                print(f"\nProcessing batch of {len(pmc_ids_batch)} PMC IDs...")
+                await process_pmc_articles(pmc_ids_batch, args.pdf_output, args.json_output, time_tracker)
+                
+        if not found_any:
             print(f"No valid PMC IDs found in {args.input_file}")
             return
-        print(f"Found {len(pmc_ids)} PMC IDs in the input file.")
-        
-        # If input file is used, process the PMIDs immediately to fetch PDF/JSON
-        await process_pmc_articles(pmc_ids, args.pdf_output, args.json_output, time_tracker)
     else:
         if not args.journals:
             print("Error: Please provide at least one journal with --journals when --use-input-file is 'n'")
             return
             
-        print("Fetching PMIDs and metadata using fixed arguments...")
-        all_articles, oa_articles, pa_articles = await crawl_pubmed_journals_async(
+        total_all_count = 0
+        total_oa_count = 0
+        total_pa_count = 0
+        pmc_ids = []
+
+        async for batch_all, batch_oa, batch_pa in crawl_pubmed_journals_async(
             journals=args.journals,
             year_from=args.year_from,
             year_to=args.year_to,
@@ -140,12 +152,15 @@ async def main():
             limit_per_journal=args.max_papers,
             api_key=args.api_key,
             time_tracker=time_tracker,
-        )
-        
-        pmc_ids = [art['pmc_id'] for art in oa_articles if art.get('pmc_id')]
-        print(f"Found {len(all_articles)} articles from search.")
-        print(f"Found {len(pa_articles)} public-access articles with PMC IDs from search.")
-        print(f"Found {len(oa_articles)} open-access articles from search.")
+        ):
+            total_all_count += len(batch_all)
+            total_oa_count += len(batch_oa)
+            total_pa_count += len(batch_pa)
+            pmc_ids.extend([art['pmc_id'] for art in batch_oa if art.get('pmc_id')])
+            
+        print(f"Found {total_all_count} articles from search.")
+        print(f"Found {total_pa_count} public-access articles with PMC IDs from search.")
+        print(f"Found {total_oa_count} open-access articles from search.")
         
         # Only process if pdf_output or json_output is specified
         if args.pdf_output or args.json_output:

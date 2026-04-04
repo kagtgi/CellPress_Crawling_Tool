@@ -274,7 +274,7 @@ async def search_pubmed_async(
     api_key: Optional[str] = None,
     progress_callback=None,
     time_tracker=None,
-) -> Tuple[List[Dict], List[Dict]]:
+):
     """Search PubMed for articles in a journal within a year range.
 
     Returns **all** matching articles with an ``open_access`` flag, regardless
@@ -354,13 +354,13 @@ async def search_pubmed_async(
     print(f"Found {len(pmids)} PMIDs", flush=True)
 
     if not pmids:
-        return [], []
+        return
 
     # ── Step 2: esummary – get metadata in batches of 200 ───────────────────
-    all_articles: List[Dict] = []
-    oa_articles: List[Dict] = []
-    pa_articles: List[Dict] = []
     batch_size = 200
+    total_yielded = 0
+    oa_yielded = 0
+    pa_yielded = 0
 
     for i in range(0, len(pmids), batch_size):
         batch = pmids[i : i + batch_size]
@@ -376,26 +376,35 @@ async def search_pubmed_async(
             duration = (batch_end_time - batch_start_time).total_seconds()
             time_tracker.record_metadata(batch_num, len(batch), batch_start_time, batch_end_time, duration)
 
+        batch_all = []
+        batch_oa = []
+        batch_pa = []
+        
         for rec in records:
-            all_articles.append(rec)
+            batch_all.append(rec)
             if rec["open_access"]:
-                oa_articles.append(rec)
+                batch_oa.append(rec)
             if rec["public_access"]:
-                pa_articles.append(rec)
+                batch_pa.append(rec)
             if progress_callback:
                 progress_callback(rec)
+
+        total_yielded += len(batch_all)
+        oa_yielded += len(batch_oa)
+        pa_yielded += len(batch_pa)
+
+        yield batch_all, batch_oa, batch_pa
 
         # Polite delay between batches
         await asyncio.sleep(_REQUEST_DELAY)
 
     print(
-        f"\nPubMed: {len(all_articles)} articles total "
-        f"({len(oa_articles)} open-access, "
-        f"{len(pa_articles)} public-access, "
-        f"{len(all_articles) - len(pa_articles)} closed-access)",
+        f"\nPubMed: {total_yielded} articles total "
+        f"({oa_yielded} open-access, "
+        f"{pa_yielded} public-access, "
+        f"{total_yielded - pa_yielded} closed-access)",
         flush=True,
     )
-    return all_articles, oa_articles, pa_articles
 
 
 async def crawl_pubmed_async(
@@ -410,30 +419,21 @@ async def crawl_pubmed_async(
     save_csv: bool = True,
     progress_callback=None,
     time_tracker=None,
-) -> Tuple[List[Dict], List[Dict]]:
-    """Crawl PubMed for articles and save a CSV summary.
-
-    Wraps :func:`search_pubmed_async` and persists results to disk as:
+):
+    """Crawl PubMed for articles and save a CSV summary progressively.
+    
+    Wraps :func:`search_pubmed_async` and persists batches directly to disk:
     * ``<out_folder>/pubmed_titles_<timestamp>.csv`` – all articles
     * ``<out_folder>/pubmed_oa_<timestamp>.csv``    – open-access only
-
-    Args:
-        journal:    Journal name as understood by PubMed (e.g. ``"Nature"``).
-        year_from:  Start year.
-        year_to:    End year.
-        keywords:   Extra search terms.
-        out_folder: Directory for output files.
-        limit:      Max articles to fetch.
-        api_key:    NCBI API key (optional but recommended for large crawls).
-        save_csv:   Whether to write CSV files.
-        progress_callback: Called with ``(article_dict)`` for each article.
-
-    Returns:
-        Tuple[all_articles, oa_articles] – same as :func:`search_pubmed_async`.
     """
     os.makedirs(out_folder, exist_ok=True)
+    
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    titles_path = os.path.join(out_folder, f"pubmed_titles_{timestamp}.csv")
+    oa_path = os.path.join(out_folder, f"pubmed_oa_{timestamp}.csv")
+    pa_path = os.path.join(out_folder, f"pubmed_pa_{timestamp}.csv")
 
-    all_articles, oa_articles, pa_articles = await search_pubmed_async(
+    async for batch_all, batch_oa, batch_pa in search_pubmed_async(
         journal=journal,
         year_from=year_from,
         year_to=year_to,
@@ -443,29 +443,16 @@ async def crawl_pubmed_async(
         api_key=api_key,
         progress_callback=progress_callback,
         time_tracker=time_tracker,
-    )
-
-    if save_csv and all_articles:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        _write_csv(
-            all_articles,
-            os.path.join(out_folder, f"pubmed_titles_{timestamp}.csv"),
-            label="all articles",
-        )
-        if oa_articles:
-            _write_csv(
-                oa_articles,
-                os.path.join(out_folder, f"pubmed_oa_{timestamp}.csv"),
-                label="open-access articles",
-            )
-        if pa_articles:
-            _write_csv(
-                pa_articles,
-                os.path.join(out_folder, f"pubmed_pa_{timestamp}.csv"),
-                label="public-access articles"
-            )
-
-    return all_articles, oa_articles, pa_articles
+    ):
+        if save_csv:
+            if batch_all:
+                _write_csv(batch_all, titles_path, label="all articles", append=True)
+            if batch_oa:
+                _write_csv(batch_oa, oa_path, label="open-access articles", append=True)
+            if batch_pa:
+                _write_csv(batch_pa, pa_path, label="public-access articles", append=True)
+                
+        yield batch_all, batch_oa, batch_pa
 
 
 # ---------------------------------------------------------------------------
@@ -484,34 +471,17 @@ async def crawl_pubmed_journals_async(
     save_csv: bool = True,
     progress_callback=None,
     time_tracker=None,
-) -> Tuple[List[Dict], List[Dict]]:
-    """Crawl multiple PubMed journals and aggregate results.
-
-    Iterates over ``journals`` and calls :func:`crawl_pubmed_async` for each,
-    merging results into a single list.
-
-    Args:
-        journals: List of journal names (e.g. ``["Nature", "Cell", "Science"]``).
-        year_from / year_to: Publication year range.
-        keywords: Additional search terms applied to every journal.
-        out_folder: Directory for output CSV files.
-        limit_per_journal: Max articles per journal.
-        api_key: NCBI API key.
-        save_csv: Write per-journal and aggregate CSVs.
-        progress_callback: Called with ``(article_dict)`` for each article.
-
-    Returns:
-        Tuple[all_articles, oa_articles] merged across all journals.
-    """
+):
+    """Crawl multiple PubMed journals incrementally to preserve memory."""
     os.makedirs(out_folder, exist_ok=True)
-    all_articles: List[Dict] = []
-    oa_articles: List[Dict] = []
-    pa_articles: List[Dict] = []
+    total_arts = 0
+    total_oa = 0
 
     for journal in journals:
         print(f"\n{'-'*60}", flush=True)
         jnl_folder = os.path.join(out_folder, _safe_name(journal))
-        arts, oa, pa = await crawl_pubmed_async(
+        
+        async for batch_all, batch_oa, batch_pa in crawl_pubmed_async(
             journal=journal,
             year_from=year_from,
             year_to=year_to,
@@ -523,42 +493,36 @@ async def crawl_pubmed_journals_async(
             save_csv=save_csv,
             progress_callback=progress_callback,
             time_tracker=time_tracker,
-        )
-        all_articles.extend(arts)
-        oa_articles.extend(oa)
-        pa_articles.extend(pa)
-
-    # Aggregate CSV
-    # if save_csv and all_articles:
-    #     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    #     _write_csv(
-    #         all_articles,
-    #         os.path.join(out_folder, f"pubmed_all_journals_{timestamp}.csv"),
-    #         label="all journals combined",
-    #     )
+        ):
+            total_arts += len(batch_all)
+            total_oa += len(batch_oa)
+            yield batch_all, batch_oa, batch_pa
 
     print(
-        f"\nPubMed crawl complete: {len(all_articles)} articles across {len(journals)} journal(s) "
-        f"({len(oa_articles)} OA)",
+        f"\nPubMed crawl complete: {total_arts} articles across {len(journals)} journal(s) "
+        f"({total_oa} OA)",
         flush=True,
     )
-    return all_articles, oa_articles, pa_articles
 
 
 # ---------------------------------------------------------------------------
 # Utility helpers
 # ---------------------------------------------------------------------------
 
-def _write_csv(articles: List[Dict], path: str, label: str = "") -> None:
-    """Write article list to a CSV file."""
+def _write_csv(articles: List[Dict], path: str, label: str = "", append: bool = False) -> None:
+    """Write article list to a CSV file incrementally."""
     fieldnames = [
         "pmid", "title", "authors", "abstract", "categories", "journal", "pub_date", "year",
         "doi", "open_access", "public_access", "pmc_id", "url", "pmc_url",
     ]
     try:
-        with open(path, "w", newline="", encoding="utf-8") as f:
+        mode = "a" if append else "w"
+        file_exists = os.path.exists(path) and os.path.getsize(path) > 0
+
+        with open(path, mode, newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore", restval="")
-            writer.writeheader()
+            if not (append and file_exists):
+                writer.writeheader()
             
             rows_to_write = []
             for art in articles:

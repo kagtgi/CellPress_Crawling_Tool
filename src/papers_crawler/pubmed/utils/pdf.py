@@ -75,7 +75,7 @@ async def download_pdf_pubmed(page: Page, pmc_id: str, pdf_out_folder: str) -> O
             pdf_url = pdf_url.replace("ftp://", "https://")
             logger.info(f"Downloading PDF from: {pdf_url}")
             print(f"Downloading PDF from: {pdf_url}")
-            pdf_resp = await page.request.get(pdf_url, timeout=60000)
+            pdf_resp = await page.request.get(pdf_url, timeout=120000)
             if not pdf_resp.ok:
                 logger.error(f"Failed to download PDF. HTTP status: {pdf_resp.status}")
                 return None
@@ -103,7 +103,7 @@ async def download_pdf_pubmed(page: Page, pmc_id: str, pdf_out_folder: str) -> O
             logger.info(f"No direct PDF link. Downloading TGZ payload from: {tgz_url}")
             print(f"No direct PDF link found. Extracting from TGZ payload: {tgz_url}")
             
-            tgz_resp = await page.request.get(tgz_url, timeout=120000)
+            tgz_resp = await page.request.get(tgz_url, timeout=180000)
             if not tgz_resp.ok:
                 logger.error(f"Failed to download TGZ. HTTP status: {tgz_resp.status}")
                 return None
