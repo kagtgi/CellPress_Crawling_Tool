@@ -1,6 +1,6 @@
 [build-system]
 requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.backends.legacy:build"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "papers-crawler"
@@ -13,8 +13,6 @@ keywords = ["crawler", "papers", "cell-press", "nature", "pubmed", "open-access"
 
 dependencies = [
     "beautifulsoup4>=4.14",
-    "playwright>=1.50",
-    "playwright-stealth>=2.0",
     "requests>=2.32",
     "tqdm>=4.60",
     "tenacity>=9.0",

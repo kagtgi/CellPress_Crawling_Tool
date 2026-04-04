@@ -13,7 +13,7 @@ testing/cell/*
 testing/pubmed/time_measurement/*
 testing/pubmed/json/*
 testing/pubmed/pdf/*
-testing/pubmed/csv/*
+# testing/pubmed/csv/*
 final-report/*
 data/*
 scripts/tmp/*
