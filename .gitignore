@@ -8,7 +8,7 @@ __pycache__
 .vscode
 
 implement-tasks/*
-testing/*
+# testing/*
 final-report/*
 data/*
 scripts/tmp/*
