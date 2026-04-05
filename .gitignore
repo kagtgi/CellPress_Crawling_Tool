@@ -6,6 +6,7 @@ __pycache__
 .pytest_cache
 .ipynb_checkpoints
 .vscode
+*.egg-info/*
 
 implement-tasks/*
 testing/nature/*
