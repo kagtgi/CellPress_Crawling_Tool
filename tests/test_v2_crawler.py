@@ -83,10 +83,10 @@ def test_sync_is_idempotent(tmp_path, monkeypatch):
     )
     items = [(META, "cursor-2")]
     first = sync_corpus(
-        CrawlConfig(tmp_path, min_interval_seconds=0), discovered=items
+        CrawlConfig(tmp_path, min_interval_seconds=0.001), discovered=items
     )
     second = sync_corpus(
-        CrawlConfig(tmp_path, min_interval_seconds=0), discovered=items
+        CrawlConfig(tmp_path, min_interval_seconds=0.001), discovered=items
     )
     assert first["metadata_only"] == second["metadata_only"] == 1
     article_files = list((tmp_path / "articles").rglob("*.json.gz"))
@@ -118,3 +118,36 @@ def test_keyless_chain_still_reaches_terminal_state(monkeypatch):
     assert body is provider is basis is None
     assert attempts
     assert all(attempt.status in {"license_unknown", "no_machine_endpoint"} for attempt in attempts)
+
+
+def test_default_paper_interval_is_sixty_seconds():
+    """The 60s politeness gate is the documented default; guard it."""
+    from papers_crawler.cli import _parser
+    from papers_crawler.corpus import CrawlConfig
+
+    args = _parser().parse_args(["sync", "--output", "out"])
+    assert args.paper_interval == 60.0
+    assert CrawlConfig(output_dir="out").min_interval_seconds == 60.0
+
+
+def test_zero_or_negative_paper_interval_is_rejected(tmp_path):
+    """`--paper-interval 0` must not silently disable throttling."""
+    import pytest
+
+    from papers_crawler.corpus import CrawlConfig
+
+    for bad in (0, 0.0, -1):
+        with pytest.raises(ValueError, match="greater than zero"):
+            CrawlConfig(output_dir=tmp_path, min_interval_seconds=bad)
+
+
+def test_max_articles_flag_is_plumbed_into_config(tmp_path):
+    """corpus_job.sh pilot mode relies on --max-articles reaching CrawlConfig."""
+    from papers_crawler.cli import _parser
+    from papers_crawler.corpus import CrawlConfig
+
+    args = _parser().parse_args(
+        ["sync", "--output", str(tmp_path), "--max-articles", "20"]
+    )
+    assert args.max_articles == 20
+    assert CrawlConfig(output_dir=tmp_path, max_articles=20).max_articles == 20

@@ -36,8 +36,11 @@ class CrawlConfig:
         object.__setattr__(self, "output_dir", Path(self.output_dir))
         if self.start_year < 1900 or self.end_year < self.start_year:
             raise ValueError("invalid year range")
-        if self.min_interval_seconds < 0:
-            raise ValueError("min_interval_seconds cannot be negative")
+        # A zero interval silently disables the politeness gate that the README
+        # documents as non-negotiable. Reject it explicitly rather than let
+        # `--paper-interval 0` hammer publishers.
+        if self.min_interval_seconds <= 0:
+            raise ValueError("min_interval_seconds must be greater than zero")
 
 
 class CrawlState:
