@@ -63,9 +63,11 @@ def canonical_bytes(document: dict[str, Any]) -> bytes:
 
 
 def content_sha256(document: dict[str, Any]) -> str:
-    """Hash a document without making the hash field self-referential."""
+    """Hash normalized article content, excluding retrieval-time bookkeeping."""
     normalized = deepcopy(document)
-    normalized.setdefault("provenance", {})["content_sha256"] = "0" * 64
+    provenance = normalized.setdefault("provenance", {})
+    provenance["content_sha256"] = "0" * 64
+    provenance.pop("retrieved_at", None)
     return hashlib.sha256(canonical_bytes(normalized)).hexdigest()
 
 

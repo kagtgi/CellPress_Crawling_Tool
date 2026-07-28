@@ -4,13 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "papers-crawler"
-version = "2.1.0"
+version = "2.2.0"
 description = "Resumable, license-aware full-text JSON crawler for Cell Press and Nature Portfolio."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
 keywords = ["crawler", "cell-press", "nature", "full-text", "open-access"]
 dependencies = [
+    "beautifulsoup4>=4.12",
     "requests>=2.32",
     "tenacity>=9.0",
     "jsonschema>=4.23",

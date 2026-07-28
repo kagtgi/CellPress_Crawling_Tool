@@ -8,9 +8,11 @@ import time
 import xml.etree.ElementTree as ET
 from typing import Any
 
+from bs4 import BeautifulSoup, Tag
+
 from .article import SCHEMA_VERSION, article_id_for, content_sha256, normalize_doi
 
-PARSER_VERSION = "papers-crawler/2.0.0"
+PARSER_VERSION = "papers-crawler/2.2.0"
 
 
 def _local(tag: str) -> str:
@@ -240,6 +242,210 @@ def jats_to_article(
             "source_sha256": hashlib.sha256(xml_bytes).hexdigest(),
             "content_sha256": "0" * 64,
             "warnings": [],
+            "completeness": {
+                "section_count": len(sections),
+                "paragraph_count": len(abstract)
+                + sum(len(section["paragraphs"]) for section in sections),
+                "reference_count": len(references),
+                "has_data_availability": bool(data_availability),
+            },
+        },
+    }
+    document["provenance"]["content_sha256"] = content_sha256(document)
+    return document
+
+
+def _html_text(node: Tag | None) -> str:
+    if node is None:
+        return ""
+    return re.sub(r"\s+", " ", node.get_text(" ", strip=True)).strip()
+
+
+def html_to_article(
+    html_bytes: bytes,
+    metadata: dict[str, Any],
+    *,
+    provider: str,
+    retrieval_basis: str,
+    license_url: str | None,
+) -> dict[str, Any]:
+    """Normalize a license-gated publisher HTML article without media.
+
+    The parser is intentionally conservative: it reads only the article
+    element, removes executable/media/navigation elements, preserves ordered
+    prose and text captions, and never follows links embedded in the page.
+    """
+    soup = BeautifulSoup(html_bytes, "html.parser")
+    article = soup.find("article") or soup.find("main")
+    if not isinstance(article, Tag):
+        raise ValueError("publisher HTML contains no article or main element")
+    for node in article.find_all(
+        [
+            "script",
+            "style",
+            "noscript",
+            "nav",
+            "aside",
+            "form",
+            "button",
+            "img",
+            "picture",
+            "video",
+            "audio",
+            "svg",
+            "canvas",
+            "iframe",
+        ]
+    ):
+        node.decompose()
+
+    title_node = article.select_one("h1.c-article-title") or article.find("h1")
+    title = metadata.get("title") or _html_text(title_node)
+
+    abstract: list[dict[str, Any]] = []
+    abstract_node = (
+        article.select_one("section#Abs1")
+        or article.select_one('[data-title="Abstract"]')
+        or article.select_one("section.c-article-section__abstract")
+    )
+    if isinstance(abstract_node, Tag):
+        for idx, para in enumerate(abstract_node.find_all("p"), 1):
+            text = _html_text(para)
+            if text:
+                abstract.append(
+                    {
+                        "paragraph_id": f"abs-p{idx}",
+                        "text": text,
+                        "citations": [],
+                    }
+                )
+
+    sections: list[dict[str, Any]] = []
+    data_availability: list[dict[str, Any]] = []
+    for node in article.find_all("section"):
+        if not isinstance(node, Tag) or node is abstract_node:
+            continue
+        heading = node.find(["h2", "h3"])
+        sec_title = _html_text(heading) or str(node.get("data-title") or "").strip()
+        if not sec_title:
+            continue
+        sec_type = _section_type(sec_title)
+        if sec_type == "references":
+            continue
+        paragraphs: list[dict[str, Any]] = []
+        for para in node.find_all("p"):
+            if para.find_parent("section") is not node:
+                continue
+            if para.find_parent(["figcaption", "table"]):
+                continue
+            text = _html_text(para)
+            if text:
+                paragraphs.append(
+                    {
+                        "paragraph_id": "",
+                        "text": text,
+                        "citations": [],
+                    }
+                )
+        if not paragraphs:
+            continue
+        section_id = f"s{len(sections) + 1}"
+        for pidx, paragraph in enumerate(paragraphs, 1):
+            paragraph["paragraph_id"] = f"{section_id}-p{pidx}"
+        section = {
+            "section_id": section_id,
+            "section_type": sec_type,
+            "title": sec_title,
+            "paragraphs": paragraphs,
+        }
+        sections.append(section)
+        if sec_type == "data_availability":
+            data_availability.extend(paragraphs)
+
+    figures = []
+    for idx, figure in enumerate(article.find_all("figure"), 1):
+        caption = figure.find("figcaption")
+        figures.append(
+            {
+                "figure_id": str(figure.get("id") or f"fig{idx}"),
+                "caption": _html_text(caption),
+            }
+        )
+    tables = []
+    for idx, table in enumerate(article.find_all("table"), 1):
+        caption = table.find("caption")
+        tables.append(
+            {
+                "table_id": str(table.get("id") or f"table{idx}"),
+                "caption": _html_text(caption),
+                "text": _html_text(table),
+            }
+        )
+    reference_items = article.select(
+        "ol.c-article-references li, .c-article-references li, "
+        "section[data-title='References'] li"
+    )
+    references = [
+        {
+            "reference_id": str(item.get("id") or f"ref{idx}"),
+            "text": _html_text(item),
+        }
+        for idx, item in enumerate(reference_items, 1)
+        if _html_text(item)
+    ]
+    if not sections and not abstract:
+        raise ValueError("publisher HTML contains no reusable article prose")
+
+    document = {
+        "schema_version": SCHEMA_VERSION,
+        "article_id": article_id_for(
+            doi=metadata.get("doi"),
+            pmcid=metadata.get("pmcid"),
+            publisher_id=metadata.get("publisher_id"),
+            canonical_url=metadata.get("canonical_url"),
+        ),
+        "identifiers": {
+            "doi": normalize_doi(metadata.get("doi")),
+            "pmcid": metadata.get("pmcid"),
+            "pmid": metadata.get("pmid"),
+            "publisher_id": metadata.get("publisher_id"),
+            "canonical_url": metadata.get("canonical_url"),
+            "issns": sorted(set(metadata.get("issns") or [])),
+        },
+        "bibliography": {
+            "title": title,
+            "authors": metadata.get("authors") or [],
+            "journal": metadata.get("journal"),
+            "publisher_family": metadata.get("publisher_family", "unknown"),
+            "published": metadata.get("published"),
+            "article_type": metadata.get("article_type"),
+            "language": metadata.get("language") or "en",
+        },
+        "access": {
+            "status": "reusable_full_text",
+            "open_access": True,
+            "license_url": license_url,
+            "license_spdx": spdx_for_license(license_url),
+            "reuse_allowed": True,
+            "retrieval_basis": retrieval_basis,
+        },
+        "content": {
+            "abstract": abstract,
+            "sections": sections,
+            "figures": figures,
+            "tables": tables,
+            "references": references,
+            "supplements": [],
+            "data_availability": data_availability,
+        },
+        "provenance": {
+            "provider": provider,
+            "source_format": "text/html",
+            "retrieved_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "parser_version": PARSER_VERSION,
+            "source_sha256": hashlib.sha256(html_bytes).hexdigest(),
+            "content_sha256": "0" * 64,
+            "warnings": ["publisher media omitted"],
             "completeness": {
                 "section_count": len(sections),
                 "paragraph_count": len(abstract)

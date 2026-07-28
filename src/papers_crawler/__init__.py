@@ -15,7 +15,7 @@ from .article import (
 )
 from .corpus import CrawlConfig, sync_corpus
 
-__version__ = "2.0.0"
+__version__ = "2.2.0"
 
 __all__ = [
     "SCHEMA_VERSION",

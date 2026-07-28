@@ -7,7 +7,11 @@ Production v2:
 
 - Discovers metadata through Crossref and Europe PMC/PubMed.
 - Retrieves reusable full text as keyless PMC OA XML first.
-- Tries licensed Crossref TDM XML and optional Elsevier/Springer Nature XML.
+- Tries licensed Crossref machine-readable links.
+- Crawls CC-licensed Nature article HTML with a `TextDataMining` user agent and
+  normalizes the page text to structural JSON without media.
+- Does not screen-scrape Cell Press/ScienceDirect pages; keyless Cell Press
+  full text comes from PMC/Europe PMC or licensed Crossref endpoints.
 - Rejects PDF URLs, PDF media types, and PDF magic bytes.
 - Validates immutable `bioparser.article.v1` JSON.
 - Writes crawl-state SQLite, append-only manifests, provider attempts, and
@@ -26,8 +30,7 @@ papers-crawler validate ./corpus/articles/<id>/<hash>.json.gz
 Use `--paper-interval 60` explicitly when an operations wrapper supplies the
 rate. Setting it to zero is intended only for offline fixtures.
 
-No key is required. `ELSEVIER_API_KEY` and `SPRINGER_NATURE_API_KEY` only add
-licensed provider coverage.
+No publisher API key is required or used by the production provider chain.
 
 The historical browser/UI modules remain under their fully qualified module
 paths for one compatibility release and require explicit legacy extras. They

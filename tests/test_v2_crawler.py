@@ -7,11 +7,16 @@ import pytest
 
 from papers_crawler.article import validate_article_document, verify_content_hash
 from papers_crawler.corpus import CrawlConfig, sync_corpus
-from papers_crawler.normalize import jats_to_article, metadata_to_article
+from papers_crawler.normalize import (
+    html_to_article,
+    jats_to_article,
+    metadata_to_article,
+)
 from papers_crawler.providers import (
     PdfRejected,
     _request,
     fetch_crossref_tdm,
+    fetch_nature_html,
     fetch_reusable_full_text,
 )
 
@@ -33,6 +38,17 @@ JATS = b"""<article><front><article-meta>
 </article-meta></front><body><sec><title>Data availability</title>
 <p>Counts are available under GSE123456.</p></sec></body></article>"""
 
+NATURE_HTML = b"""<!doctype html><html><body><article>
+<h1 class="c-article-title">Single-cell expression</h1>
+<section id="Abs1"><h2>Abstract</h2><p>We profiled human T cells.</p></section>
+<section data-title="Methods"><h2>Methods</h2>
+<p>Libraries used 10x Genomics Chromium.</p></section>
+<section data-title="Data availability"><h2>Data availability</h2>
+<p>Counts are available under GSE123456.</p></section>
+<figure id="Fig1"><img src="/image.jpg"><figcaption>Expression overview.</figcaption>
+</figure><script>window.secret = true</script>
+</article></body></html>"""
+
 
 def test_jats_contract_and_hash():
     doc = jats_to_article(
@@ -45,6 +61,81 @@ def test_jats_contract_and_hash():
     validate_article_document(doc)
     assert verify_content_hash(doc)
     assert doc["content"]["sections"][0]["paragraphs"][0]["paragraph_id"] == "s1-p1"
+
+
+def test_retrieval_timestamp_does_not_create_a_new_content_version():
+    first = jats_to_article(
+        JATS,
+        META,
+        provider="fixture",
+        retrieval_basis="test",
+        license_url="https://creativecommons.org/licenses/by/4.0/",
+    )
+    second = json.loads(json.dumps(first))
+    second["provenance"]["retrieved_at"] = "2099-01-01T00:00:00Z"
+    assert first["provenance"]["content_sha256"] == second["provenance"][
+        "content_sha256"
+    ]
+    assert verify_content_hash(second)
+
+
+def test_nature_html_contract_omits_media_and_preserves_prose():
+    doc = html_to_article(
+        NATURE_HTML,
+        {**META, "publisher_family": "nature_portfolio"},
+        provider="nature_html",
+        retrieval_basis="CC-licensed Nature HTML",
+        license_url="https://creativecommons.org/licenses/by/4.0/",
+    )
+    validate_article_document(doc)
+    assert verify_content_hash(doc)
+    assert doc["provenance"]["source_format"] == "text/html"
+    assert doc["content"]["abstract"][0]["text"] == "We profiled human T cells."
+    assert doc["content"]["data_availability"][0]["paragraph_id"] == "s2-p1"
+    assert doc["content"]["figures"][0]["caption"] == "Expression overview."
+    serialized = json.dumps(doc)
+    assert "image.jpg" not in serialized
+    assert "window.secret" not in serialized
+
+
+class _NatureSession:
+    def __init__(self):
+        self.headers = None
+
+    def get(self, url, params=None, timeout=None, headers=None):
+        self.headers = headers
+        response = _StubResponse("https://www.nature.com/articles/s41586-test")
+        response.headers = {"content-type": "text/html; charset=utf-8"}
+        response.content = NATURE_HTML
+        return response
+
+
+def test_nature_html_is_keyless_license_gated_and_uses_tdm_agent():
+    session = _NatureSession()
+    body, attempt = fetch_nature_html(
+        {
+            **META,
+            "publisher_family": "nature_portfolio",
+            "canonical_url": "https://doi.org/10.1038/s41586-test",
+            "license_url": "https://creativecommons.org/licenses/by/4.0/",
+        },
+        session=session,
+    )
+    assert body == NATURE_HTML
+    assert attempt.status == "reusable_full_text"
+    assert "TextDataMining" in session.headers["User-Agent"]
+    assert "text/html" in session.headers["Accept"]
+
+    body, attempt = fetch_nature_html(
+        {
+            **META,
+            "publisher_family": "nature_portfolio",
+            "canonical_url": "https://www.nature.com/articles/s41586-test",
+        },
+        session=session,
+    )
+    assert body is None
+    assert attempt.status == "license_unknown"
 
 
 def test_production_default_is_one_paper_per_minute(tmp_path):
@@ -118,6 +209,17 @@ def test_keyless_chain_still_reaches_terminal_state(monkeypatch):
     assert body is provider is basis is None
     assert attempts
     assert all(attempt.status in {"license_unknown", "no_machine_endpoint"} for attempt in attempts)
+
+
+def test_production_chain_never_calls_keyed_publishers(monkeypatch):
+    def forbidden(*args, **kwargs):
+        raise AssertionError("keyed publisher provider entered production chain")
+
+    monkeypatch.setattr("papers_crawler.providers.fetch_elsevier_xml", forbidden)
+    monkeypatch.setattr("papers_crawler.providers.fetch_springer_jats", forbidden)
+    body, provider, basis, attempts = fetch_reusable_full_text(META)
+    assert body is provider is basis is None
+    assert attempts
 
 
 def test_default_paper_interval_is_sixty_seconds():

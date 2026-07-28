@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from .article import article_id_for, validate_article_document, write_immutable
-from .normalize import jats_to_article, metadata_to_article
+from .normalize import html_to_article, jats_to_article, metadata_to_article
 from .providers import (
     ProviderAttempt,
     discover_crossref,
@@ -311,7 +311,10 @@ def sync_corpus(
                 for attempt in attempts:
                     state.record_attempt(article_id, attempt)
                 if xml_bytes and provider and basis:
-                    document = jats_to_article(
+                    normalizer = (
+                        html_to_article if provider == "nature_html" else jats_to_article
+                    )
+                    document = normalizer(
                         xml_bytes,
                         enriched,
                         provider=provider,

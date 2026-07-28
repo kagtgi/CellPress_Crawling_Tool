@@ -8,7 +8,7 @@ import time
 from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 import requests
 
@@ -57,12 +57,13 @@ def _request(
     *,
     params: dict[str, Any] | None = None,
     timeout: float = 45,
+    accept: str = "application/xml, application/json;q=0.9, text/xml;q=0.8",
 ) -> requests.Response:
     if url.lower().split("?", 1)[0].endswith(".pdf"):
         raise PdfRejected(f"PDF URL rejected: {url}")
     headers = {
         "User-Agent": USER_AGENT,
-        "Accept": "application/xml, application/json;q=0.9, text/xml;q=0.8",
+        "Accept": accept,
     }
     last_error: Exception | None = None
     for attempt in range(MAX_ATTEMPTS):
@@ -447,6 +448,78 @@ def fetch_crossref_tdm(
     )
 
 
+def fetch_nature_html(
+    metadata: dict[str, Any],
+    *,
+    session: requests.Session | None = None,
+) -> tuple[bytes | None, ProviderAttempt]:
+    """Fetch a CC-licensed Nature article page without an API key.
+
+    Nature's TDM guidance requests a user agent containing ``TextDataMining``.
+    We additionally require a reusable license before the request and verify
+    that redirects stay on nature.com. Search, figure, table, and media routes
+    are never requested.
+    """
+    if metadata.get("publisher_family") != "nature_portfolio":
+        return None, ProviderAttempt(
+            "nature_html", "", "no_machine_endpoint", reason="not Nature Portfolio"
+        )
+    if not has_reusable_license(metadata):
+        return None, ProviderAttempt(
+            "nature_html", "", "license_unknown", reason="no reusable license"
+        )
+    doi = str(metadata.get("doi") or "")
+    url = str(metadata.get("canonical_url") or "")
+    if not url and doi.lower().startswith("10.1038/"):
+        url = f"https://www.nature.com/articles/{quote(doi.split('/', 1)[1])}"
+    if not url:
+        return None, ProviderAttempt(
+            "nature_html", "", "no_machine_endpoint", reason="no article URL"
+        )
+    try:
+        response = _request(
+            session or requests.Session(),
+            url,
+            accept="text/html, application/xhtml+xml;q=0.9",
+        )
+    except PdfRejected as exc:
+        return None, ProviderAttempt("nature_html", url, "closed", reason=str(exc))
+    except requests.RequestException as exc:
+        code = (
+            exc.response.status_code
+            if isinstance(exc, requests.HTTPError) and exc.response is not None
+            else None
+        )
+        status = "no_machine_endpoint" if code in {404, 410} else "retryable_failure"
+        return None, ProviderAttempt(
+            "nature_html", url, status, http_status=code, reason=str(exc)
+        )
+    hostname = (urlparse(response.url).hostname or "").lower()
+    if hostname != "nature.com" and not hostname.endswith(".nature.com"):
+        return None, ProviderAttempt(
+            "nature_html",
+            response.url,
+            "no_machine_endpoint",
+            http_status=response.status_code,
+            reason="redirect left nature.com",
+        )
+    content_type = response.headers.get("content-type", "").lower()
+    if "html" not in content_type:
+        return None, ProviderAttempt(
+            "nature_html",
+            response.url,
+            "no_machine_endpoint",
+            http_status=response.status_code,
+            reason=f"unexpected content type: {content_type or 'missing'}",
+        )
+    return response.content, ProviderAttempt(
+        "nature_html",
+        response.url,
+        "reusable_full_text",
+        response.status_code,
+    )
+
+
 def fetch_elsevier_xml(
     metadata: dict[str, Any],
     *,
@@ -527,7 +600,12 @@ def fetch_reusable_full_text(
     *,
     session: requests.Session | None = None,
 ) -> tuple[bytes | None, str | None, str | None, list[ProviderAttempt]]:
-    """Run the licensed XML provider order without requiring optional keys."""
+    """Run the keyless, licensed full-text provider order.
+
+    Publisher API keys are deliberately absent from the production path.
+    Elsevier/Cell Press website scraping is not used; Cell Press full text must
+    come from PMC/Europe PMC or a licensed Crossref machine endpoint.
+    """
     attempts: list[ProviderAttempt] = []
     client = session or requests.Session()
     if metadata.get("is_open_access") and metadata.get("pmcid"):
@@ -537,8 +615,11 @@ def fetch_reusable_full_text(
             return body, "europe_pmc", "PMC OA full-text XML", attempts
     for provider, basis, fetcher in (
         ("crossref_tdm", "Crossref licensed TDM XML", fetch_crossref_tdm),
-        ("elsevier", "Elsevier Article Retrieval XML", fetch_elsevier_xml),
-        ("springer_nature", "Springer Nature OA JATS", fetch_springer_jats),
+        (
+            "nature_html",
+            "CC-licensed Nature HTML with TextDataMining user agent",
+            fetch_nature_html,
+        ),
     ):
         body, attempt = fetcher(metadata, session=client)
         attempts.append(attempt)
