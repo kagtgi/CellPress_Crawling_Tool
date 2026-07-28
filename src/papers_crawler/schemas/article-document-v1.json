@@ -1,0 +1,104 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/kagtgi/CellPress_Crawling_Tool/schemas/article-document-v1.json",
+  "title": "BioParser Article Document v1",
+  "type": "object",
+  "required": ["schema_version", "article_id", "identifiers", "bibliography", "access", "content", "provenance"],
+  "properties": {
+    "schema_version": {"const": "bioparser.article.v1"},
+    "article_id": {"type": "string", "minLength": 3},
+    "identifiers": {
+      "type": "object",
+      "required": ["doi", "pmcid", "pmid", "publisher_id", "canonical_url", "issns"],
+      "properties": {
+        "doi": {"type": ["string", "null"]},
+        "pmcid": {"type": ["string", "null"]},
+        "pmid": {"type": ["string", "null"]},
+        "publisher_id": {"type": ["string", "null"]},
+        "canonical_url": {"type": ["string", "null"]},
+        "issns": {"type": "array", "items": {"type": "string"}, "uniqueItems": true}
+      },
+      "additionalProperties": false
+    },
+    "bibliography": {
+      "type": "object",
+      "required": ["title", "authors", "journal", "publisher_family", "published", "article_type", "language"],
+      "properties": {
+        "title": {"type": "string"},
+        "authors": {"type": "array", "items": {"type": "object"}},
+        "journal": {"type": ["string", "null"]},
+        "publisher_family": {"enum": ["cell_press", "nature_portfolio", "unknown"]},
+        "published": {"type": ["string", "null"]},
+        "article_type": {"type": ["string", "null"]},
+        "language": {"type": ["string", "null"]}
+      },
+      "additionalProperties": true
+    },
+    "access": {
+      "type": "object",
+      "required": ["status", "open_access", "license_url", "license_spdx", "reuse_allowed", "retrieval_basis"],
+      "properties": {
+        "status": {"enum": ["reusable_full_text", "closed", "license_unknown", "no_machine_endpoint", "retryable_failure", "metadata_only"]},
+        "open_access": {"type": "boolean"},
+        "license_url": {"type": ["string", "null"]},
+        "license_spdx": {"type": ["string", "null"]},
+        "reuse_allowed": {"type": "boolean"},
+        "retrieval_basis": {"type": ["string", "null"]}
+      },
+      "additionalProperties": true
+    },
+    "content": {
+      "type": "object",
+      "required": ["abstract", "sections", "figures", "tables", "references", "supplements", "data_availability"],
+      "properties": {
+        "abstract": {"type": "array", "items": {"$ref": "#/$defs/paragraph"}},
+        "sections": {"type": "array", "items": {"$ref": "#/$defs/section"}},
+        "figures": {"type": "array", "items": {"type": "object"}},
+        "tables": {"type": "array", "items": {"type": "object"}},
+        "references": {"type": "array", "items": {"type": "object"}},
+        "supplements": {"type": "array", "items": {"type": "object"}},
+        "data_availability": {"type": "array", "items": {"$ref": "#/$defs/paragraph"}}
+      },
+      "additionalProperties": true
+    },
+    "provenance": {
+      "type": "object",
+      "required": ["provider", "source_format", "retrieved_at", "parser_version", "source_sha256", "content_sha256", "warnings", "completeness"],
+      "properties": {
+        "provider": {"type": "string"},
+        "source_format": {"type": "string"},
+        "retrieved_at": {"type": "string"},
+        "parser_version": {"type": "string"},
+        "source_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "content_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "warnings": {"type": "array", "items": {"type": "string"}},
+        "completeness": {"type": "object"}
+      },
+      "additionalProperties": true
+    }
+  },
+  "$defs": {
+    "paragraph": {
+      "type": "object",
+      "required": ["paragraph_id", "text", "citations"],
+      "properties": {
+        "paragraph_id": {"type": "string"},
+        "text": {"type": "string"},
+        "citations": {"type": "array", "items": {"type": "string"}}
+      },
+      "additionalProperties": false
+    },
+    "section": {
+      "type": "object",
+      "required": ["section_id", "section_type", "title", "paragraphs"],
+      "properties": {
+        "section_id": {"type": "string"},
+        "section_type": {"type": "string"},
+        "title": {"type": "string"},
+        "paragraphs": {"type": "array", "items": {"$ref": "#/$defs/paragraph"}}
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": false
+}

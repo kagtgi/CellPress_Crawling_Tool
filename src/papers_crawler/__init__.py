@@ -1,46 +1,29 @@
-"""papers_crawler — crawl papers from Cell.com, Nature.com, and PubMed."""
+"""License-aware full-text JSON crawler.
 
-__version__ = "1.0.0"
+The v2 public surface is deliberately browser- and PDF-free. Legacy browser
+modules remain importable by fully qualified name when their optional extra is
+installed, but importing this package never imports Playwright or Streamlit.
+"""
 
-# Regular sync API (for scripts and Streamlit)
-from .cell.crawl_cell_pdf_sync import crawl, discover_journals
-
-# Async API (for Colab/Jupyter notebooks)
-from .cell.crawl_cell_pdf_async import crawl_async, discover_journals_async
-
-# Cell.com text extraction
-from .cell.crawl_cell_text_async import crawl_text_async
-
-# Nature.com text extraction
-from .nature.crawl_nature_async import (
-    crawl_text_nature_async,
-    crawl_titles_nature_async,
-    discover_journals_nature_async,
-    extract_fulltext_nature_as_json,
+from .article import (
+    SCHEMA_VERSION,
+    article_id_for,
+    content_sha256,
+    load_article_schema,
+    validate_article_document,
+    verify_content_hash,
 )
+from .corpus import CrawlConfig, sync_corpus
 
-# PubMed crawling (NCBI E-utilities, no browser required)
-from .pubmed.crawl_pubmed_async import (
-    search_pubmed_async,
-    crawl_pubmed_async,
-    crawl_pubmed_journals_async,
-)
+__version__ = "2.0.0"
 
 __all__ = [
-    # Cell.com – PDF download
-    "crawl",
-    "discover_journals",
-    "crawl_async",
-    "discover_journals_async",
-    # Cell.com – full-text JSON
-    "crawl_text_async",
-    # Nature.com – full-text JSON and PDF
-    "crawl_text_nature_async",
-    "crawl_titles_nature_async",
-    "discover_journals_nature_async",
-    "extract_fulltext_nature_as_json",
-    # PubMed – title & metadata crawling
-    "search_pubmed_async",
-    "crawl_pubmed_async",
-    "crawl_pubmed_journals_async",
+    "SCHEMA_VERSION",
+    "CrawlConfig",
+    "article_id_for",
+    "content_sha256",
+    "load_article_schema",
+    "sync_corpus",
+    "validate_article_document",
+    "verify_content_hash",
 ]
