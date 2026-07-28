@@ -453,3 +453,28 @@ def test_yielded_cursor_is_year_tagged_and_resumable():
     assert "from-pub-date:2012-01-01" in s2.filters[0]
     assert s2.cursors[0] == "DEEPCUR"
     assert len(s2.filters) == 2  # 2012 then 2013
+
+
+def test_legacy_untagged_cursor_is_discarded_not_replayed():
+    """A pre-chunking cursor encodes the OLD multi-year query's shard state.
+
+    Replaying it against a single-year filter makes Crossref 500 - which is
+    exactly how the backfill died after year-chunking was introduced.
+    """
+    from papers_crawler.providers import discover_crossref
+
+    s = _YearRecordingSession()
+    list(discover_crossref(start_year=2010, end_year=2011,
+                           cursor="DnF1ZXJ5VGhlbkZldGNoJAAAAAATRnYc", session=s))
+    assert s.cursors == ["*", "*"], "stale cursor must be dropped, not reused"
+    assert "from-pub-date:2010-01-01" in s.filters[0]
+
+
+def test_malformed_tagged_cursor_falls_back_safely():
+    from papers_crawler.providers import discover_crossref
+
+    for bad in ("notayear|CUR", "2012|", "|CUR", "|"):
+        s = _YearRecordingSession()
+        list(discover_crossref(start_year=2019, end_year=2019, cursor=bad, session=s))
+        assert s.cursors == ["*"], bad
+        assert "from-pub-date:2019-01-01" in s.filters[0]

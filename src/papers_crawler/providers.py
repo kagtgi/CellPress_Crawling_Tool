@@ -157,11 +157,15 @@ def discover_crossref(
         for issn in journal.get("issns", [])
     }
     wanted = set(by_issn)
-    resume_year, _, resume_cursor = (cursor or "*").partition("|")
-    if resume_cursor and resume_year.isdigit():
+    resume_year, tagged, resume_cursor = (cursor or "*").partition("|")
+    if tagged and resume_year.isdigit() and resume_cursor:
         first_year, current = int(resume_year), resume_cursor
     else:
-        first_year, current = start_year, (cursor or "*")
+        # An untagged cursor predates year-chunking: it encodes the shard state
+        # of the old multi-year query, and Crossref 500s when it is replayed
+        # against a single-year filter. Discard it and restart the year cleanly
+        # rather than resuming into a guaranteed failure.
+        first_year, current = start_year, "*"
     for year in range(max(first_year, start_year), end_year + 1):
         yield from _discover_crossref_year(
             client, by_issn, wanted, year=year, rows=rows, cursor=current
