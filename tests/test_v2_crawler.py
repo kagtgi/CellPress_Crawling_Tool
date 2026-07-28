@@ -202,24 +202,27 @@ def test_tdm_link_is_not_license_proof():
     assert attempt.status == "license_unknown"
 
 
-def test_keyless_chain_still_reaches_terminal_state(monkeypatch):
-    monkeypatch.delenv("ELSEVIER_API_KEY", raising=False)
-    monkeypatch.delenv("SPRINGER_NATURE_API_KEY", raising=False)
+def test_keyless_chain_still_reaches_terminal_state():
     body, provider, basis, attempts = fetch_reusable_full_text(META)
     assert body is provider is basis is None
     assert attempts
     assert all(attempt.status in {"license_unknown", "no_machine_endpoint"} for attempt in attempts)
 
 
-def test_production_chain_never_calls_keyed_publishers(monkeypatch):
-    def forbidden(*args, **kwargs):
-        raise AssertionError("keyed publisher provider entered production chain")
+def test_keyed_publisher_providers_are_gone():
+    """The keyed Elsevier/Springer fetchers were removed with the web->JSON
+    switch. Asserting their *absence* is stronger than monkeypatching them out:
+    a reader must not find a fetcher implying a capability production lacks.
+    """
+    import pathlib
 
-    monkeypatch.setattr("papers_crawler.providers.fetch_elsevier_xml", forbidden)
-    monkeypatch.setattr("papers_crawler.providers.fetch_springer_jats", forbidden)
-    body, provider, basis, attempts = fetch_reusable_full_text(META)
-    assert body is provider is basis is None
-    assert attempts
+    from papers_crawler import providers
+
+    for name in ("fetch_elsevier_xml", "fetch_springer_jats"):
+        assert not hasattr(providers, name), f"{name} should have been removed"
+    source = pathlib.Path(providers.__file__).read_text(encoding="utf-8")
+    for env in ("ELSEVIER_API_KEY", "SPRINGER_NATURE_API_KEY"):
+        assert env not in source, f"{env} must not be read anywhere"
 
 
 def test_default_paper_interval_is_sixty_seconds():
