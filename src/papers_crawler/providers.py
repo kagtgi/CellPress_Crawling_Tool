@@ -99,7 +99,11 @@ def discover_crossref(
                     + ",".join(f"issn:{x}" for x in sorted(wanted))
                 ),
                 "cursor": current,
-                "cursor-max": rows,
+                # No "cursor-max": Crossref has no such parameter and hard-fails
+                # the whole request with 400 validation-failure
+                # ("Parameter cursor-max specified but there is no such
+                # parameter available on any route") rather than ignoring it.
+                # `rows` alone bounds the page size for cursor paging.
                 "rows": rows,
                 "select": (
                     "DOI,title,author,container-title,published,URL,ISSN,type,"

@@ -151,3 +151,57 @@ def test_max_articles_flag_is_plumbed_into_config(tmp_path):
     )
     assert args.max_articles == 20
     assert CrawlConfig(output_dir=tmp_path, max_articles=20).max_articles == 20
+
+
+# Crossref rejects unknown query parameters with a 400 validation-failure rather
+# than ignoring them, so a single stray param silently kills all discovery. The
+# v2.0.0 crawler sent "cursor-max", which is not a Crossref parameter:
+#   {"type":"unknown-parameter","value":"cursor-max",
+#    "message":"Parameter cursor-max specified but there is no such parameter
+#               available on any route"}
+_CROSSREF_ALLOWED_PARAMS = {
+    "filter", "cursor", "rows", "select", "sort", "order", "query", "offset",
+    "sample", "facet", "mailto",
+}
+
+
+class _CapturingSession:
+    """Session stub that records the params of the first request and stops."""
+
+    def __init__(self):
+        self.params = None
+
+    def get(self, url, params=None, timeout=None, headers=None):
+        self.params = params
+        return _StubResponse(url)
+
+
+class _StubResponse:
+    status_code = 200
+
+    def __init__(self, url):
+        self.url = url
+        self.headers = {"content-type": "application/json"}
+        self.content = b"{}"
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return {"message": {"items": [], "next-cursor": None}}
+
+
+def test_crossref_sends_only_known_parameters():
+    from papers_crawler.providers import discover_crossref
+
+    session = _CapturingSession()
+    list(discover_crossref(start_year=2024, end_year=2024, session=session))
+
+    assert session.params is not None, "no Crossref request was made"
+    unknown = set(session.params) - _CROSSREF_ALLOWED_PARAMS
+    assert not unknown, f"Crossref would 400 on unknown parameter(s): {unknown}"
+    assert "cursor-max" not in session.params
+    # cursor paging still bounded by rows
+    assert session.params["cursor"] == "*"
+    assert int(session.params["rows"]) > 0
+    assert "issn:" in session.params["filter"]
