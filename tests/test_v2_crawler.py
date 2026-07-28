@@ -205,3 +205,69 @@ def test_crossref_sends_only_known_parameters():
     assert session.params["cursor"] == "*"
     assert int(session.params["rows"]) > 0
     assert "issn:" in session.params["filter"]
+
+
+def test_registry_excludes_multidisciplinary_by_default():
+    """Nature/Nat Comms/Sci Reports publish all of science; Crossref exposes no
+    usable `subject`, so an ISSN filter alone admits engineering and maths."""
+    from papers_crawler.providers import load_journals
+
+    names = {j["name"] for j in load_journals()}
+    for banned in ("Nature", "Nature Communications", "Scientific Reports"):
+        assert banned not in names, f"{banned} is multidisciplinary"
+    # dedicated life-science journals are still present
+    for kept in ("Cell", "Neuron", "Immunity", "Nature Genetics", "eLife"):
+        assert kept in names
+    assert all(j.get("scope") == "life_science" for j in load_journals())
+
+
+def test_multidisciplinary_available_on_request():
+    from papers_crawler.providers import load_journals
+
+    names = {j["name"] for j in load_journals(include_multidisciplinary=True)}
+    assert {"Nature", "Nature Communications", "Scientific Reports"} <= names
+
+
+def test_every_registry_entry_is_well_formed():
+    from papers_crawler.providers import load_journals
+
+    for j in load_journals(include_multidisciplinary=True):
+        assert j["name"] and j["publisher_family"]
+        assert j["issns"], j["name"]
+        assert j.get("scope") in {"life_science", "multidisciplinary"}
+        for issn in j["issns"]:
+            assert len(issn) == 9 and issn[4] == "-", (j["name"], issn)
+
+
+def test_no_duplicate_issns_across_registry():
+    from papers_crawler.providers import load_journals
+
+    seen = {}
+    for j in load_journals(include_multidisciplinary=True):
+        for issn in j["issns"]:
+            assert issn not in seen, f"{issn} in both {seen.get(issn)} and {j['name']}"
+            seen[issn] = j["name"]
+
+
+import pytest as _pytest  # noqa: E402
+
+
+@_pytest.mark.parametrize(
+    "title, ok",
+    [
+        ("A single-cell atlas of human liver", True),
+        ("Correction: Genome-wide identification of X", False),
+        ("Author Correction: Autoimmune response to C9orf72", False),
+        ("Publisher Correction: something", False),
+        ("Retraction Note: a paper", False),
+        ("Erratum: another paper", False),
+        ("Corrigendum to a paper", False),
+        ("Comment on the recent findings", False),
+        ("Reply to Smith et al.", False),
+        ("", False),
+    ],
+)
+def test_non_research_records_are_filtered(title, ok):
+    from papers_crawler.providers import is_research_article
+
+    assert is_research_article({"title": title}) is ok

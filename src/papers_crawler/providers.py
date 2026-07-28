@@ -63,11 +63,38 @@ def has_reusable_license(metadata: dict[str, Any]) -> bool:
     return any(token in value for token in REUSABLE_LICENSE_TOKENS)
 
 
-def load_journals() -> list[dict[str, Any]]:
+#: Title prefixes that mark a non-research record. Crossref types these all as
+#: "journal-article", so `type` cannot filter them.
+_NON_RESEARCH_PREFIXES = (
+    "correction:", "author correction:", "publisher correction:",
+    "retraction:", "retraction note", "erratum", "editorial expression of concern",
+    "addendum:", "comment on", "reply to", "corrigendum",
+)
+
+
+def load_journals(*, include_multidisciplinary: bool = False) -> list[dict[str, Any]]:
+    """Return the journal registry, life-science scope only by default.
+
+    Nature / Nature Communications / Scientific Reports publish across all of
+    science, and Crossref exposes no usable ``subject`` for them (verified
+    empty for every Nature-portfolio record), so a biology-only corpus cannot be
+    obtained from them by metadata filtering — an ISSN filter alone admits civil
+    engineering, mathematics and climate papers. They stay in the registry
+    tagged ``multidisciplinary`` and are excluded unless explicitly requested.
+    """
     from importlib.resources import files
 
     path = files("papers_crawler").joinpath("data/life_science_journals.json")
-    return json.loads(path.read_text(encoding="utf-8"))
+    journals = json.loads(path.read_text(encoding="utf-8"))
+    if include_multidisciplinary:
+        return journals
+    return [j for j in journals if j.get("scope", "life_science") == "life_science"]
+
+
+def is_research_article(metadata: dict[str, Any]) -> bool:
+    """False for corrections, retractions, errata and commentary."""
+    title = str(metadata.get("title") or "").strip().lower()
+    return bool(title) and not title.startswith(_NON_RESEARCH_PREFIXES)
 
 
 def discover_crossref(
@@ -77,10 +104,11 @@ def discover_crossref(
     rows: int = 100,
     cursor: str = "*",
     session: requests.Session | None = None,
+    include_multidisciplinary: bool = False,
 ) -> Iterator[tuple[dict[str, Any], str | None]]:
     """Yield registry-filtered Crossref works and the cursor for resumption."""
     client = session or requests.Session()
-    journals = load_journals()
+    journals = load_journals(include_multidisciplinary=include_multidisciplinary)
     by_issn = {
         issn.upper(): journal
         for journal in journals
@@ -124,10 +152,15 @@ def discover_crossref(
             )[0]
             published = "-".join(f"{int(x):02d}" for x in date_parts if x is not None)
             licenses = item.get("license") or []
+            title = (item.get("title") or [""])[0]
+            # Corrections/retractions/errata are typed "journal-article" by
+            # Crossref, so skip them here or they pollute the corpus.
+            if not is_research_article({"title": title}):
+                continue
             yield (
                 {
                     "doi": item.get("DOI"),
-                    "title": (item.get("title") or [""])[0],
+                    "title": title,
                     "authors": [
                         {
                             "given": author.get("given"),
