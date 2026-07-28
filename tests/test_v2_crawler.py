@@ -271,3 +271,97 @@ def test_non_research_records_are_filtered(title, ok):
     from papers_crawler.providers import is_research_article
 
     assert is_research_article({"title": title}) is ok
+
+
+# A transient Crossref 500 during deep cursor pagination previously aborted the
+# whole backfill: _request called raise_for_status() with no retry.
+class _FlakySession:
+    def __init__(self, statuses):
+        self.statuses = list(statuses)
+        self.calls = 0
+
+    def get(self, url, params=None, timeout=None, headers=None):
+        self.calls += 1
+        status = self.statuses.pop(0) if self.statuses else 200
+        return _FlakyResponse(status, url)
+
+
+class _FlakyResponse:
+    def __init__(self, status_code, url, retry_after=None):
+        self.status_code = status_code
+        self.url = url
+        self.headers = {"content-type": "application/json"}
+        if retry_after:
+            self.headers["retry-after"] = retry_after
+        self.content = b"{}"
+
+    def close(self):
+        return None
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise __import__("requests").HTTPError(f"{self.status_code}")
+
+
+def test_request_retries_transient_server_errors(monkeypatch):
+    from papers_crawler import providers
+
+    slept = []
+    monkeypatch.setattr(providers.time, "sleep", lambda s: slept.append(s))
+    session = _FlakySession([500, 503, 429])
+    response = providers._request(session, "https://api.crossref.org/works")
+    assert response.status_code == 200
+    assert session.calls == 4          # three transient failures, then success
+    assert len(slept) == 3
+
+
+def test_request_honours_retry_after(monkeypatch):
+    from papers_crawler import providers
+
+    slept = []
+    monkeypatch.setattr(providers.time, "sleep", lambda s: slept.append(s))
+
+    class _Once:
+        def __init__(self):
+            self.calls = 0
+
+        def get(self, url, params=None, timeout=None, headers=None):
+            self.calls += 1
+            if self.calls == 1:
+                return _FlakyResponse(503, url, retry_after="9")
+            return _FlakyResponse(200, url)
+
+    providers._request(_Once(), "https://api.crossref.org/works")
+    assert slept == [9.0]
+
+
+def test_request_still_raises_after_exhausting_attempts(monkeypatch):
+    import requests as _requests
+
+    from papers_crawler import providers
+
+    monkeypatch.setattr(providers.time, "sleep", lambda s: None)
+    session = _FlakySession([500] * 20)
+    with _pytest.raises(_requests.HTTPError):
+        providers._request(session, "https://api.crossref.org/works")
+
+
+def test_pdf_rejection_is_never_retried(monkeypatch):
+    from papers_crawler import providers
+    from papers_crawler.providers import PdfRejected
+
+    monkeypatch.setattr(providers.time, "sleep", lambda s: None)
+
+    class _Pdf:
+        calls = 0
+
+        def get(self, url, params=None, timeout=None, headers=None):
+            _Pdf.calls += 1
+            r = _FlakyResponse(200, url)
+            r.headers["content-type"] = "application/pdf"
+            return r
+
+    session = _Pdf()
+    with _pytest.raises(PdfRejected):
+        providers._request(session, "https://example.org/x")
+    assert _Pdf.calls == 1, "PDF rejection must be terminal, not retried"

@@ -14,6 +14,24 @@ import requests
 
 USER_AGENT = "BioParser/2.0 TextDataMining (mailto:corpus@tasih.ai)"
 PDF_TYPES = {"application/pdf", "application/x-pdf"}
+
+#: Transient HTTP statuses worth retrying. Crossref intermittently 500s on deep
+#: cursor pagination, and a single blip previously aborted an entire multi-week
+#: backfill because _request called raise_for_status() with no retry.
+RETRY_STATUS = frozenset({429, 500, 502, 503, 504})
+MAX_ATTEMPTS = max(1, int(os.environ.get("PAPERS_CRAWLER_HTTP_ATTEMPTS", "5")))
+MAX_BACKOFF_SECONDS = 60.0
+
+
+def _backoff_seconds(response: requests.Response | None, attempt: int) -> float:
+    if response is not None:
+        header = response.headers.get("retry-after")
+        if header:
+            try:
+                return max(0.0, min(MAX_BACKOFF_SECONDS, float(header)))
+            except ValueError:
+                pass
+    return min(MAX_BACKOFF_SECONDS, 2.0**attempt)
 REUSABLE_LICENSE_TOKENS = (
     "creativecommons.org/licenses/",
     "creativecommons.org/publicdomain/",
@@ -42,20 +60,35 @@ def _request(
 ) -> requests.Response:
     if url.lower().split("?", 1)[0].endswith(".pdf"):
         raise PdfRejected(f"PDF URL rejected: {url}")
-    response = session.get(
-        url,
-        params=params,
-        timeout=timeout,
-        headers={
-            "User-Agent": USER_AGENT,
-            "Accept": "application/xml, application/json;q=0.9, text/xml;q=0.8",
-        },
-    )
-    content_type = response.headers.get("content-type", "").split(";", 1)[0].lower()
-    if content_type in PDF_TYPES or response.content.startswith(b"%PDF-"):
-        raise PdfRejected(f"PDF response rejected: {response.url}")
-    response.raise_for_status()
-    return response
+    headers = {
+        "User-Agent": USER_AGENT,
+        "Accept": "application/xml, application/json;q=0.9, text/xml;q=0.8",
+    }
+    last_error: Exception | None = None
+    for attempt in range(MAX_ATTEMPTS):
+        try:
+            response = session.get(
+                url, params=params, timeout=timeout, headers=headers
+            )
+        except requests.RequestException as exc:
+            last_error = exc
+            if attempt == MAX_ATTEMPTS - 1:
+                raise
+            time.sleep(_backoff_seconds(None, attempt))
+            continue
+        # PDF rejection stays terminal - never retried, never persisted.
+        content_type = response.headers.get("content-type", "").split(";", 1)[0].lower()
+        if content_type in PDF_TYPES or response.content.startswith(b"%PDF-"):
+            raise PdfRejected(f"PDF response rejected: {response.url}")
+        status = getattr(response, "status_code", 200)
+        if status in RETRY_STATUS and attempt < MAX_ATTEMPTS - 1:
+            delay = _backoff_seconds(response, attempt)
+            response.close()
+            time.sleep(delay)
+            continue
+        response.raise_for_status()
+        return response
+    raise last_error or requests.RequestException(f"request failed: {url}")
 
 
 def has_reusable_license(metadata: dict[str, Any]) -> bool:
