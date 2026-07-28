@@ -365,3 +365,91 @@ def test_pdf_rejection_is_never_retried(monkeypatch):
     with _pytest.raises(PdfRejected):
         providers._request(session, "https://example.org/x")
     assert _Pdf.calls == 1, "PDF rejection must be terminal, not retried"
+
+
+# Crossref serves the first page of a 2010-2026 x 50-ISSN query (212k results)
+# but 500s once the cursor walks deep into it, which aborted the backfill. Chunk
+# discovery per year so each cursor walk stays shallow.
+class _YearRecordingSession:
+    """Records the pub-date filter of every request; 1 item then end per year."""
+
+    def __init__(self):
+        self.filters = []
+        self.cursors = []
+
+    def get(self, url, params=None, timeout=None, headers=None):
+        self.filters.append(params["filter"])
+        self.cursors.append(params["cursor"])
+        return _YearResponse(url)
+
+
+class _YearResponse:
+    status_code = 200
+
+    def __init__(self, url):
+        self.url = url
+        self.headers = {"content-type": "application/json"}
+        self.content = b"{}"
+
+    def close(self):
+        return None
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return {
+            "message": {
+                "items": [{"DOI": "10.1/x", "title": ["T"], "ISSN": ["0092-8674"],
+                           "container-title": ["Cell"], "type": "journal-article"}],
+                "next-cursor": None,
+            }
+        }
+
+
+def test_discovery_is_chunked_one_year_at_a_time():
+    from papers_crawler.providers import discover_crossref
+
+    s = _YearRecordingSession()
+    list(discover_crossref(start_year=2010, end_year=2014, session=s))
+
+    assert len(s.filters) == 5, "expected one request per year"
+    for offset, flt in enumerate(s.filters):
+        year = 2010 + offset
+        assert f"from-pub-date:{year}-01-01" in flt
+        assert f"until-pub-date:{year}-12-31" in flt
+    # never a single multi-year span (that is what Crossref 500s on)
+    assert not any("from-pub-date:2010-01-01" in f and "until-pub-date:2014-12-31" in f
+                   for f in s.filters)
+    # every year starts a fresh cursor
+    assert s.cursors == ["*"] * 5
+
+
+def test_yielded_cursor_is_year_tagged_and_resumable():
+    from papers_crawler.providers import discover_crossref
+
+    class _Paging(_YearRecordingSession):
+        def get(self, url, params=None, timeout=None, headers=None):
+            self.filters.append(params["filter"])
+            self.cursors.append(params["cursor"])
+            r = _YearResponse(url)
+            first = len(self.filters) == 1
+            r.json = lambda: {"message": {
+                "items": [{"DOI": "10.1/x", "title": ["T"], "ISSN": ["0092-8674"],
+                           "container-title": ["Cell"], "type": "journal-article"}],
+                "next-cursor": "RAWCUR" if first else None}}
+            return r
+
+    s = _Paging()
+    out = list(discover_crossref(start_year=2020, end_year=2020, session=s))
+    assert out[0][1] == "2020|RAWCUR", out[0][1]
+    # the RAW cursor (not the tagged one) is what goes back to Crossref
+    assert s.cursors == ["*", "RAWCUR"]
+
+    # resuming from a tagged cursor starts in that year with the raw cursor
+    s2 = _YearRecordingSession()
+    list(discover_crossref(start_year=2010, end_year=2013,
+                           cursor="2012|DEEPCUR", session=s2))
+    assert "from-pub-date:2012-01-01" in s2.filters[0]
+    assert s2.cursors[0] == "DEEPCUR"
+    assert len(s2.filters) == 2  # 2012 then 2013

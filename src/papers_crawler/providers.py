@@ -139,7 +139,16 @@ def discover_crossref(
     session: requests.Session | None = None,
     include_multidisciplinary: bool = False,
 ) -> Iterator[tuple[dict[str, Any], str | None]]:
-    """Yield registry-filtered Crossref works and the cursor for resumption."""
+    """Yield registry-filtered Crossref works and the cursor for resumption.
+
+    Discovery is chunked **one year at a time**. Crossref serves the first page
+    of a 2010-2026 × 50-ISSN query fine (212k results) but 500s once the cursor
+    walks deep into it, which killed the whole backfill. Per-year result sets are
+    ~10k and page reliably.
+
+    The yielded cursor is ``"<year>|<crossref-cursor>"`` so a resumed run
+    continues in the right year; a bare cursor is treated as ``start_year``.
+    """
     client = session or requests.Session()
     journals = load_journals(include_multidisciplinary=include_multidisciplinary)
     by_issn = {
@@ -148,6 +157,28 @@ def discover_crossref(
         for issn in journal.get("issns", [])
     }
     wanted = set(by_issn)
+    resume_year, _, resume_cursor = (cursor or "*").partition("|")
+    if resume_cursor and resume_year.isdigit():
+        first_year, current = int(resume_year), resume_cursor
+    else:
+        first_year, current = start_year, (cursor or "*")
+    for year in range(max(first_year, start_year), end_year + 1):
+        yield from _discover_crossref_year(
+            client, by_issn, wanted, year=year, rows=rows, cursor=current
+        )
+        current = "*"  # each year starts a fresh cursor
+
+
+def _discover_crossref_year(
+    client: requests.Session,
+    by_issn: dict[str, dict[str, Any]],
+    wanted: set[str],
+    *,
+    year: int,
+    rows: int,
+    cursor: str,
+) -> Iterator[tuple[dict[str, Any], str | None]]:
+    start_year = end_year = year
     current = cursor
     while current:
         response = _request(
@@ -173,7 +204,9 @@ def discover_crossref(
             },
         )
         message = response.json()["message"]
-        next_cursor = message.get("next-cursor")
+        raw_cursor = message.get("next-cursor")
+        # Tag the cursor with its year so a resumed run continues in that year.
+        next_cursor = f"{year}|{raw_cursor}" if raw_cursor else None
         items = message.get("items", [])
         for item in items:
             issns = [str(x).upper() for x in item.get("ISSN", [])]
@@ -219,9 +252,11 @@ def discover_crossref(
                 },
                 next_cursor,
             )
-        if not items or not next_cursor or next_cursor == current:
+        # Advance on the RAW cursor: `next_cursor` is year-tagged for callers
+        # and would be rejected by Crossref if sent back as a cursor.
+        if not items or not raw_cursor or raw_cursor == current:
             break
-        current = next_cursor
+        current = raw_cursor
 
 
 def discover_europe_pmc(
