@@ -615,3 +615,38 @@ def test_newest_first_resume_continues_downward():
     assert 2016 not in years, "already-crawled newer years must not repeat"
     assert s.cursors[0] == "DEEPCUR"
     assert years[-1] == 2010
+
+
+def test_one_failing_year_does_not_abort_the_backfill(capsys):
+    """A 17-year backfill must survive a transient Crossref outage in one year.
+
+    Observed in production: 2026 500'd and exhausted the retry budget, killing
+    the entire run - yet the same query returned HTTP 200 (10,987 results) five
+    times in a row minutes later.
+    """
+    import requests
+
+    from papers_crawler.providers import discover_crossref
+
+    class _OneBadYear:
+        def __init__(self):
+            self.years = []
+
+        def get(self, url, params=None, timeout=None, headers=None):
+            year = int(params["filter"].split("from-pub-date:")[1][:4])
+            self.years.append(year)
+            if year == 2025:
+                raise requests.HTTPError("500 Server Error")
+            return _YearResponse(url)
+
+    session = _OneBadYear()
+    out = list(discover_crossref(start_year=2023, end_year=2026, session=session))
+
+    # every year attempted, including the ones after the failure
+    assert sorted(set(session.years)) == [2023, 2024, 2025, 2026]
+    # the good years still produced results
+    assert len(out) == 3, "years after the failure must still be crawled"
+    # and the skip is reported, not silent
+    err = capsys.readouterr().err
+    assert "failed for 2025" in err
+    assert "years skipped after retries" in err and "2025" in err

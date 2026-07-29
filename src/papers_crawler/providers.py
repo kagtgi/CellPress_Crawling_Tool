@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -184,11 +185,31 @@ def discover_crossref(
             y for y in range(start_year, end_year + 1)
             if max(first_year, start_year) <= y <= end_year
         ]
+    failed_years: list[int] = []
     for year in years:
-        yield from _discover_crossref_year(
-            client, by_issn, wanted, year=year, rows=rows, cursor=current
-        )
+        # One year must never abort a multi-week backfill. Crossref 500s
+        # intermittently (a year that fails now returns HTTP 200 minutes later),
+        # and _request's bounded retry can still exhaust during a bad spell.
+        # Skip that year, keep going, and report it rather than dying or
+        # silently pretending the range was covered.
+        try:
+            yield from _discover_crossref_year(
+                client, by_issn, wanted, year=year, rows=rows, cursor=current
+            )
+        except requests.RequestException as exc:
+            failed_years.append(year)
+            print(
+                f"crossref discovery failed for {year}, continuing: "
+                f"{type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
         current = "*"  # each year starts a fresh cursor
+    if failed_years:
+        print(
+            "crossref years skipped after retries (re-run to pick them up): "
+            + ", ".join(str(y) for y in failed_years),
+            file=sys.stderr,
+        )
 
 
 def _discover_crossref_year(
