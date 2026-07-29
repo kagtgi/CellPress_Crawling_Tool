@@ -519,16 +519,24 @@ def test_discovery_is_chunked_one_year_at_a_time():
     list(discover_crossref(start_year=2010, end_year=2014, session=s,
                            newest_first=False))
 
-    assert len(s.filters) == 5, "expected one request per year"
-    for offset, flt in enumerate(s.filters):
+    from papers_crawler.providers import load_journals
+
+    issn_count = len({i.upper() for j in load_journals() for i in j.get("issns", [])})
+    # One shallow request per (year, journal): querying all ISSNs at once makes a
+    # year ~11k works, and Crossref 500s once the cursor walks that deep.
+    assert len(s.filters) == 5 * issn_count
+    for flt in s.filters:
+        assert flt.count("issn:") == 1, f"expected a single journal per query: {flt}"
+    for offset in range(5):
         year = 2010 + offset
-        assert f"from-pub-date:{year}-01-01" in flt
-        assert f"until-pub-date:{year}-12-31" in flt
+        matching = [f for f in s.filters if f"from-pub-date:{year}-01-01" in f]
+        assert len(matching) == issn_count, f"year {year} not fully chunked"
+        assert all(f"until-pub-date:{year}-12-31" in f for f in matching)
     # never a single multi-year span (that is what Crossref 500s on)
     assert not any("from-pub-date:2010-01-01" in f and "until-pub-date:2014-12-31" in f
                    for f in s.filters)
-    # every year starts a fresh cursor
-    assert s.cursors == ["*"] * 5
+    # every (year, journal) chunk starts a fresh cursor
+    assert s.cursors == ["*"] * (5 * issn_count)
 
 
 def test_yielded_cursor_is_year_tagged_and_resumable():
@@ -546,19 +554,35 @@ def test_yielded_cursor_is_year_tagged_and_resumable():
                 "next-cursor": "RAWCUR" if first else None}}
             return r
 
+    from papers_crawler.providers import load_journals
+
+    issns = sorted({i.upper() for j in load_journals() for i in j.get("issns", [])})
+    first_issn = issns[0]
+
     s = _Paging()
     out = list(discover_crossref(start_year=2020, end_year=2020, session=s))
-    assert out[0][1] == "2020|RAWCUR", out[0][1]
+    # Tagged with year AND journal, so a resumed run re-enters the same chunk.
+    assert out[0][1] == f"2020|{first_issn}|RAWCUR", out[0][1]
     # the RAW cursor (not the tagged one) is what goes back to Crossref
-    assert s.cursors == ["*", "RAWCUR"]
+    assert s.cursors[:2] == ["*", "RAWCUR"]
 
-    # resuming from a tagged cursor starts in that year with the raw cursor
+    # resuming from a tagged cursor re-enters that year and that journal
     s2 = _YearRecordingSession()
+    resume_issn = issns[3]
     list(discover_crossref(start_year=2010, end_year=2013,
-                           cursor="2012|DEEPCUR", session=s2, newest_first=False))
+                           cursor=f"2012|{resume_issn}|DEEPCUR", session=s2,
+                           newest_first=False))
     assert "from-pub-date:2012-01-01" in s2.filters[0]
+    assert f"issn:{resume_issn}" in s2.filters[0]
     assert s2.cursors[0] == "DEEPCUR"
-    assert len(s2.filters) == 2  # 2012 then 2013
+    # journals before the resume point in that year are not re-walked
+    assert not any(f"issn:{issns[0]}" in f for f in s2.filters
+                   if "from-pub-date:2012-01-01" in f)
+    # 2012 resumes partway through its journals; 2013 is walked in full.
+    walked_2012 = [f for f in s2.filters if "from-pub-date:2012-01-01" in f]
+    walked_2013 = [f for f in s2.filters if "from-pub-date:2013-01-01" in f]
+    assert len(walked_2012) == len(issns) - 3
+    assert len(walked_2013) == len(issns)
 
 
 def test_legacy_untagged_cursor_is_discarded_not_replayed():
@@ -573,7 +597,9 @@ def test_legacy_untagged_cursor_is_discarded_not_replayed():
     list(discover_crossref(start_year=2010, end_year=2011,
                            cursor="DnF1ZXJ5VGhlbkZldGNoJAAAAAATRnYc", session=s,
                            newest_first=False))
-    assert s.cursors == ["*", "*"], "stale cursor must be dropped, not reused"
+    # Discovery is chunked per (year, journal), so the count is not 2 - what
+    # matters is that the stale cursor is never sent back to Crossref.
+    assert set(s.cursors) == {"*"}, "stale cursor must be dropped, not reused"
     assert "from-pub-date:2010-01-01" in s.filters[0]
 
 
@@ -584,7 +610,7 @@ def test_malformed_tagged_cursor_falls_back_safely():
         s = _YearRecordingSession()
         list(discover_crossref(start_year=2019, end_year=2019, cursor=bad,
                                session=s, newest_first=False))
-        assert s.cursors == ["*"], bad
+        assert set(s.cursors) == {"*"}, bad
         assert "from-pub-date:2019-01-01" in s.filters[0]
 
 
@@ -597,59 +623,92 @@ def test_discovery_walks_newest_year_first_by_default():
     s = _YearRecordingSession()
     list(discover_crossref(start_year=2010, end_year=2014, session=s))
 
+    # Per-journal chunking means many requests per year; the ORDER of years is
+    # what this pins, so compare the de-duplicated sequence.
     years = [int(f.split("from-pub-date:")[1][:4]) for f in s.filters]
-    assert years == [2014, 2013, 2012, 2011, 2010], years
-    assert s.cursors == ["*"] * 5
+    ordered = [y for i, y in enumerate(years) if i == 0 or years[i - 1] != y]
+    assert ordered == [2014, 2013, 2012, 2011, 2010], ordered
+    assert set(s.cursors) == {"*"}
 
 
 def test_newest_first_resume_continues_downward():
-    from papers_crawler.providers import discover_crossref
+    from papers_crawler.providers import discover_crossref, load_journals
+
+    issns = sorted({i.upper() for j in load_journals() for i in j.get("issns", [])})
+    resume_issn = issns[2]
 
     s = _YearRecordingSession()
     list(discover_crossref(start_year=2010, end_year=2020,
-                           cursor="2015|DEEPCUR", session=s))
+                           cursor=f"2015|{resume_issn}|DEEPCUR", session=s))
 
     years = [int(f.split("from-pub-date:")[1][:4]) for f in s.filters]
     assert years[0] == 2015, "must resume in the tagged year"
     assert years == sorted(years, reverse=True), "must keep walking downward"
     assert 2016 not in years, "already-crawled newer years must not repeat"
     assert s.cursors[0] == "DEEPCUR"
+    assert f"issn:{resume_issn}" in s.filters[0], "must resume in the tagged journal"
     assert years[-1] == 2010
 
 
-def test_one_failing_year_does_not_abort_the_backfill(capsys):
-    """A 17-year backfill must survive a transient Crossref outage in one year.
+def test_two_part_cursor_from_the_previous_release_is_discarded():
+    """A `year|cursor` cursor encodes an ALL-ISSN query's shard state.
 
-    Observed in production: 2026 500'd and exhausted the retry budget, killing
-    the entire run - yet the same query returned HTTP 200 (10,987 results) five
-    times in a row minutes later.
+    Discovery is now chunked per journal, so replaying that cursor against a
+    single-ISSN filter is the same 500 trap that killed the backfill when
+    year-chunking was introduced. It must be dropped, not reused - while still
+    resuming in the year it names.
+    """
+    from papers_crawler.providers import discover_crossref
+
+    s = _YearRecordingSession()
+    list(discover_crossref(start_year=2010, end_year=2020,
+                           cursor="2015|DnF1ZXJ5VGhlbkZldGNoJAAAAAATRnYc", session=s))
+
+    assert set(s.cursors) == {"*"}, "stale all-ISSN cursor must not be replayed"
+    assert int(s.filters[0].split("from-pub-date:")[1][:4]) == 2015
+
+
+def test_one_failing_journal_year_does_not_abort_the_backfill(monkeypatch, capsys):
+    """A transient Crossref outage must cost one journal-year, not the whole run.
+
+    Observed twice in production: 2026 500'd deep in pagination and exhausted the
+    retry budget. The first fix kept the run alive but abandoned the rest of that
+    year; per-journal chunking contains it to a single journal.
     """
     import requests
 
-    from papers_crawler.providers import discover_crossref
+    from papers_crawler import providers
+    from papers_crawler.providers import discover_crossref, load_journals
 
-    class _OneBadYear:
+    # Otherwise the retry budget really sleeps, once per failing journal.
+    monkeypatch.setattr(providers, "MAX_ATTEMPTS", 1)
+    issns = sorted({i.upper() for j in load_journals() for i in j.get("issns", [])})
+    doomed = issns[1]
+
+    class _OneBadJournal:
         def __init__(self):
-            self.years = []
+            self.seen = []
 
         def get(self, url, params=None, timeout=None, headers=None):
-            year = int(params["filter"].split("from-pub-date:")[1][:4])
-            self.years.append(year)
-            if year == 2025:
+            flt = params["filter"]
+            year = int(flt.split("from-pub-date:")[1][:4])
+            issn = flt.split("issn:")[1]
+            self.seen.append((year, issn))
+            if issn == doomed:
                 raise requests.HTTPError("500 Server Error")
             return _YearResponse(url)
 
-    session = _OneBadYear()
-    out = list(discover_crossref(start_year=2023, end_year=2026, session=session))
+    session = _OneBadJournal()
+    out = list(discover_crossref(start_year=2025, end_year=2026, session=session))
 
-    # every year attempted, including the ones after the failure
-    assert sorted(set(session.years)) == [2023, 2024, 2025, 2026]
-    # the good years still produced results
-    assert len(out) == 3, "years after the failure must still be crawled"
-    # and the skip is reported, not silent
+    # every journal attempted in both years, including after the failure
+    assert {y for y, _ in session.seen} == {2025, 2026}
+    assert len({i for _, i in session.seen}) == len(issns)
+    # the healthy journals still produced results in both years
+    assert len(out) == 2 * (len(issns) - 1)
     err = capsys.readouterr().err
-    assert "failed for 2025" in err
-    assert "years skipped after retries" in err and "2025" in err
+    assert f"failed for {doomed} in 2026" in err
+    assert "journals skipped in 2026" in err
 
 
 class _JsonResponse:
@@ -705,7 +764,10 @@ class _StableCursorCrossref:
 
 
 def test_stable_cursor_keeps_paging_instead_of_stopping_at_page_two():
-    from papers_crawler.providers import _discover_crossref_year, load_journals
+    from papers_crawler.providers import (
+        _discover_crossref_issn_year,
+        load_journals,
+    )
 
     journals = load_journals()
     by_issn = {i.upper(): j for j in journals for i in j.get("issns", [])}
@@ -714,8 +776,8 @@ def test_stable_cursor_keeps_paging_instead_of_stopping_at_page_two():
     session = _StableCursorCrossref(pages, issn=issn)
 
     out = list(
-        _discover_crossref_year(
-            session, by_issn, set(by_issn), year=2026, rows=4, cursor="*"
+        _discover_crossref_issn_year(
+            session, by_issn, issn, year=2026, rows=4, cursor="*"
         )
     )
     # Every page must be walked, not just the first two.
@@ -725,7 +787,10 @@ def test_stable_cursor_keeps_paging_instead_of_stopping_at_page_two():
 
 def test_wedged_cursor_still_terminates():
     """A cursor that truly repeats the same page must not loop forever."""
-    from papers_crawler.providers import _discover_crossref_year, load_journals
+    from papers_crawler.providers import (
+        _discover_crossref_issn_year,
+        load_journals,
+    )
 
     journals = load_journals()
     by_issn = {i.upper(): j for j in journals for i in j.get("issns", [])}
@@ -734,8 +799,8 @@ def test_wedged_cursor_still_terminates():
     session = _StableCursorCrossref([same] * 50, issn=issn)
 
     out = list(
-        _discover_crossref_year(
-            session, by_issn, set(by_issn), year=2026, rows=4, cursor="*"
+        _discover_crossref_issn_year(
+            session, by_issn, issn, year=2026, rows=4, cursor="*"
         )
     )
     assert len(out) == 4

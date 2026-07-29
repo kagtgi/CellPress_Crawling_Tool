@@ -193,9 +193,14 @@ def discover_crossref(
         # Skip that year, keep going, and report it rather than dying or
         # silently pretending the range was covered.
         try:
-            yield from _discover_crossref_year(
+            # The inner walker tags with the journal; the year is prefixed here
+            # so a resumed run re-enters the right year AND journal.
+            for metadata, inner_cursor in _discover_crossref_year(
                 client, by_issn, wanted, year=year, rows=rows, cursor=current
-            )
+            ):
+                yield metadata, (
+                    f"{year}|{inner_cursor}" if inner_cursor else None
+                )
         except requests.RequestException as exc:
             failed_years.append(year)
             print(
@@ -216,6 +221,54 @@ def _discover_crossref_year(
     client: requests.Session,
     by_issn: dict[str, dict[str, Any]],
     wanted: set[str],
+    *,
+    year: int,
+    rows: int,
+    cursor: str,
+) -> Iterator[tuple[dict[str, Any], str | None]]:
+    """Walk one year, one journal at a time.
+
+    Querying all 50 ISSNs together makes a year ~11k works, and Crossref 500s
+    once the cursor walks deep into a result set that large - observed twice in
+    production, each time abandoning the remainder of the year even though the
+    run itself survived. Per-journal-per-year is a few hundred works, which pages
+    in a handful of shallow requests and never reaches the depth that fails.
+
+    A 500 on one journal is contained: that journal-year is reported and skipped,
+    the rest of the year still runs. The yielded cursor is ``<issn>|<cursor>`` so
+    a resumed run re-enters the same journal, and `discover_crossref` prefixes the
+    year, giving ``<year>|<issn>|<cursor>``.
+    """
+    issns = sorted(wanted)
+    resume_issn, _, resume_cursor = (cursor or "*").partition("|")
+    start = issns.index(resume_issn) if resume_issn in issns else 0
+    inner = resume_cursor if (resume_issn in issns and resume_cursor) else "*"
+    skipped: list[str] = []
+    for issn in issns[start:]:
+        try:
+            yield from _discover_crossref_issn_year(
+                client, by_issn, issn, year=year, rows=rows, cursor=inner
+            )
+        except requests.RequestException as exc:
+            skipped.append(issn)
+            print(
+                f"crossref discovery failed for {issn} in {year}, continuing: "
+                f"{type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
+        inner = "*"
+    if skipped:
+        print(
+            f"crossref journals skipped in {year} (re-run to pick them up): "
+            + ", ".join(skipped),
+            file=sys.stderr,
+        )
+
+
+def _discover_crossref_issn_year(
+    client: requests.Session,
+    by_issn: dict[str, dict[str, Any]],
+    issn: str,
     *,
     year: int,
     rows: int,
@@ -243,7 +296,7 @@ def _discover_crossref_year(
                 "filter": (
                     f"from-pub-date:{start_year}-01-01,"
                     f"until-pub-date:{end_year}-12-31,"
-                    + ",".join(f"issn:{x}" for x in sorted(wanted))
+                    f"issn:{issn}"
                 ),
                 "cursor": current,
                 # No "cursor-max": Crossref has no such parameter and hard-fails
@@ -260,8 +313,9 @@ def _discover_crossref_year(
         )
         message = response.json()["message"]
         raw_cursor = message.get("next-cursor")
-        # Tag the cursor with its year so a resumed run continues in that year.
-        next_cursor = f"{year}|{raw_cursor}" if raw_cursor else None
+        # Tag with the journal so a resumed run re-enters it; discover_crossref
+        # prefixes the year, producing "<year>|<issn>|<cursor>".
+        next_cursor = f"{issn}|{raw_cursor}" if raw_cursor else None
         items = message.get("items", [])
         page_dois = {str(x.get("DOI")) for x in items if x.get("DOI")}
         fresh = page_dois - seen_dois
