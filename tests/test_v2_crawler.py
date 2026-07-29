@@ -805,3 +805,115 @@ def test_wedged_cursor_still_terminates():
     )
     assert len(out) == 4
     assert session.requests == 2, "should stop as soon as a page adds nothing new"
+
+
+def test_every_registry_publisher_family_passes_the_schema():
+    """The schema enum and the journal registry must not drift apart.
+
+    They did, and it was silent and total: the enum allowed only cell_press,
+    nature_portfolio and unknown, so all 7 journals with any other family -
+    eLife, PLOS, EMBO, Genome Biology, Genome Research, Nucleic Acids Research,
+    J Exp Med - had every paper fetched successfully (europe_pmc
+    reusable_full_text 200) and then dropped by validate_article_document with a
+    bare ValidationError. Those are the most open-access, highest-yield journals
+    in the registry. Nothing surfaced it because the failure was recorded only as
+    an exception class name, and discovery never previously walked deep enough
+    into a single non-Cell/Nature journal to make it obvious.
+    """
+    import json
+    from importlib.resources import files
+
+    from papers_crawler.providers import load_journals
+
+    schema = json.loads(
+        files("papers_crawler")
+        .joinpath("schemas/article-document-v1.json")
+        .read_text(encoding="utf-8")
+    )
+    allowed = set(
+        schema["properties"]["bibliography"]["properties"]["publisher_family"]["enum"]
+    )
+    registry = {
+        j.get("publisher_family")
+        for j in load_journals(include_multidisciplinary=True)
+    }
+    missing = sorted(registry - allowed)
+    assert not missing, (
+        f"registry families rejected by the schema: {missing} - every paper from "
+        "those journals would be fetched and then silently discarded"
+    )
+    assert "unknown" in allowed, "the fallback family must stay valid"
+
+
+def test_publisher_family_enum_still_rejects_an_unknown_value():
+    """Widening the enum must not turn it into a no-op guard."""
+    from papers_crawler.article import validate_article_document
+
+    doc = metadata_to_article(
+        {**META, "publisher_family": "not_a_real_publisher"},
+        provider="crossref",
+        status="license_unknown",
+    )
+    with pytest.raises(Exception, match="not_a_real_publisher"):
+        validate_article_document(doc)
+
+
+JATS_BACK_MATTER = b"""<article><front><article-meta>
+<article-id pub-id-type="doi">10.1000/test</article-id>
+<title-group><article-title>Single-cell expression</article-title></title-group>
+</article-meta></front><body><sec><title>Results</title>
+<p>We profiled 5,000 cells.</p></sec></body><back>
+<ack><title>Acknowledgements</title><p>We thank the core facility.</p></ack>
+<sec sec-type="data-availability"><title>Data availability</title>
+<p>Counts are deposited under GSE123456.</p></sec>
+<ref-list><title>References</title><ref id="bib1"><mixed-citation>X</mixed-citation></ref>
+</ref-list></back></article>"""
+
+
+def test_jats_data_availability_in_back_matter_is_captured():
+    """JATS puts the data-availability statement in <back>, not <body>.
+
+    The normalizer walked only <body>, so this section was dropped from every
+    JATS article - and it is the one section carrying the GEO accessions the
+    corpus exists to find. Verified against the live Europe PMC XML for
+    10.1038/s41467-021-21246-9: GSE156357 was invisible before, and is extracted
+    from the data-availability text after.
+    """
+    doc = jats_to_article(
+        JATS_BACK_MATTER,
+        META,
+        provider="europe_pmc",
+        retrieval_basis="PMC OA",
+        license_url="https://creativecommons.org/licenses/by/4.0/",
+    )
+    validate_article_document(doc)
+    assert verify_content_hash(doc)
+
+    availability = doc["content"]["data_availability"]
+    assert len(availability) == 1, "back-matter data availability must be captured"
+    assert "GSE123456" in availability[0]["text"]
+    completeness = doc["provenance"]["completeness"]
+    assert completeness["has_data_availability"] is True
+
+    titles = [s["title"] for s in doc["content"]["sections"]]
+    assert "Data availability" in titles
+    # References are captured separately; ref-list must not become a section.
+    assert "References" not in titles
+    assert doc["content"]["references"], "references still parsed from back matter"
+
+
+def test_declared_sec_type_wins_over_an_unhelpful_title():
+    """Back-matter statements are reliably typed but inconsistently titled."""
+    xml = JATS_BACK_MATTER.replace(
+        b'<sec sec-type="data-availability"><title>Data availability</title>',
+        b'<sec sec-type="data-availability"><title>Statement</title>',
+    )
+    doc = jats_to_article(
+        xml,
+        META,
+        provider="europe_pmc",
+        retrieval_basis="PMC OA",
+        license_url="https://creativecommons.org/licenses/by/4.0/",
+    )
+    assert len(doc["content"]["data_availability"]) == 1
+    assert "GSE123456" in doc["content"]["data_availability"][0]["text"]

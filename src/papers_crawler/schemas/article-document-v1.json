@@ -27,7 +27,7 @@
         "title": {"type": "string"},
         "authors": {"type": "array", "items": {"type": "object"}},
         "journal": {"type": ["string", "null"]},
-        "publisher_family": {"enum": ["cell_press", "nature_portfolio", "unknown"]},
+        "publisher_family": {"enum": ["bmc", "cell_press", "cshl", "elife", "embo", "nature_portfolio", "oxford", "plos", "rockefeller", "unknown"]},
         "published": {"type": ["string", "null"]},
         "article_type": {"type": ["string", "null"]},
         "language": {"type": ["string", "null"]}

@@ -42,10 +42,12 @@ def _paragraph(node: ET.Element, paragraph_id: str) -> dict[str, Any]:
 
 
 def _section_type(title: str) -> str:
-    low = title.lower()
+    low = title.lower().replace("-", " ").replace("_", " ")
     for token, target in (
         ("data availability", "data_availability"),
         ("availability of data", "data_availability"),
+        ("data and code availability", "data_availability"),
+        ("accession", "data_availability"),
         ("method", "methods"),
         ("material", "methods"),
         ("result", "results"),
@@ -138,14 +140,31 @@ def jats_to_article(
     sections: list[dict[str, Any]] = []
     data_availability: list[dict[str, Any]] = []
     bodies = _all(root, "body")
-    if bodies:
-        # Only top-level sections. Nested section text remains in its parent,
-        # preserving source order without duplicating each nested paragraph.
-        top_sections = [n for n in list(bodies[0]) if _local(n.tag) == "sec"]
+    # Only top-level sections. Nested section text remains in its parent,
+    # preserving source order without duplicating each nested paragraph.
+    top_sections = (
+        [n for n in list(bodies[0]) if _local(n.tag) == "sec"] if bodies else []
+    )
+    # JATS puts the data-availability statement in <back>, not <body> - as
+    # <sec sec-type="data-availability"> or <notes notes-type="...">. Walking only
+    # <body> dropped it from every JATS article, and that is the one section that
+    # carries the GEO/ArrayExpress accessions the corpus is built to find.
+    # <ref-list> is excluded (references are captured separately); <ack> is not a
+    # sec/notes element, so it is skipped naturally.
+    for back in _all(root, "back"):
+        top_sections += [
+            n for n in list(back) if _local(n.tag) in {"sec", "notes"}
+        ]
+    if top_sections:
         for sidx, sec in enumerate(top_sections, 1):
             title_node = next((n for n in sec if _local(n.tag) == "title"), None)
             sec_title = _text(title_node) or f"Section {sidx}"
-            sec_type = _section_type(sec_title)
+            # Trust the machine-readable type over the human title: back-matter
+            # statements are reliably typed but inconsistently titled.
+            declared = sec.attrib.get("sec-type") or sec.attrib.get("notes-type") or ""
+            sec_type = _section_type(declared) if declared else "other"
+            if sec_type == "other":
+                sec_type = _section_type(sec_title)
             paragraphs = []
             for pidx, para in enumerate(_all(sec, "p"), 1):
                 item = _paragraph(para, f"s{sidx}-p{pidx}")
