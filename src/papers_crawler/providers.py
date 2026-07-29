@@ -223,6 +223,18 @@ def _discover_crossref_year(
 ) -> Iterator[tuple[dict[str, Any], str | None]]:
     start_year = end_year = year
     current = cursor
+    # Crossref returns a byte-identical `next-cursor` while still serving fresh
+    # pages: measured on 2026, the cursor was unchanged on 11 of 12 requests yet
+    # every page carried 100 brand-new DOIs (1,200 unique over 12 pages, of
+    # 11,032 total). Treating cursor equality as end-of-results therefore capped
+    # every year at ~200 works - under 2% of the year - which is exactly what
+    # production showed: ~70 articles per year, each year "finished" in an hour.
+    #
+    # So progress is judged by the response, not the cursor: stop on an empty
+    # page, or on a page that contributes no DOI we have not already yielded.
+    # That still terminates if the cursor genuinely wedges, without mistaking a
+    # working stable cursor for exhaustion.
+    seen_dois: set[str] = set()
     while current:
         response = _request(
             client,
@@ -251,7 +263,15 @@ def _discover_crossref_year(
         # Tag the cursor with its year so a resumed run continues in that year.
         next_cursor = f"{year}|{raw_cursor}" if raw_cursor else None
         items = message.get("items", [])
+        page_dois = {str(x.get("DOI")) for x in items if x.get("DOI")}
+        fresh = page_dois - seen_dois
+        seen_dois |= page_dois
         for item in items:
+            # A repeated page (wedged cursor) must not re-emit work the caller
+            # has already seen; only DOIs new to this year are yielded.
+            doi = str(item.get("DOI") or "")
+            if doi and doi not in fresh:
+                continue
             issns = [str(x).upper() for x in item.get("ISSN", [])]
             match = next((by_issn[x] for x in issns if x in by_issn), None)
             if not match:
@@ -297,7 +317,7 @@ def _discover_crossref_year(
             )
         # Advance on the RAW cursor: `next_cursor` is year-tagged for callers
         # and would be rejected by Crossref if sent back as a cursor.
-        if not items or not raw_cursor or raw_cursor == current:
+        if not items or not raw_cursor or not fresh:
             break
         current = raw_cursor
 

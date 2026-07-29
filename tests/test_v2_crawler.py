@@ -650,3 +650,93 @@ def test_one_failing_year_does_not_abort_the_backfill(capsys):
     err = capsys.readouterr().err
     assert "failed for 2025" in err
     assert "years skipped after retries" in err and "2025" in err
+
+
+class _JsonResponse:
+    status_code = 200
+
+    def __init__(self, payload):
+        self._payload = payload
+        self.url = "https://api.crossref.org/works"
+        self.headers = {"content-type": "application/json"}
+        self.content = b"{}"
+
+    def close(self):
+        return None
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self._payload
+
+
+class _StableCursorCrossref:
+    """Crossref as it actually behaves: one cursor string, fresh pages.
+
+    Measured against the live API for 2026: `next-cursor` was byte-identical on
+    11 of 12 requests while every page still returned 100 previously-unseen
+    DOIs (1,200 unique of 11,032 total).
+    """
+
+    def __init__(self, pages, *, cursor="CONSTANT", issn="0092-8674"):
+        self.pages = pages
+        self.cursor = cursor
+        self.issn = issn
+        self.requests = 0
+
+    def get(self, url, params=None, timeout=None, headers=None):
+        index = self.requests
+        self.requests += 1
+        items = [] if index >= len(self.pages) else [
+            {
+                "DOI": doi,
+                "title": [f"Research article {doi}"],
+                "ISSN": [self.issn],
+                "published": {"date-parts": [[2026, 1, 1]]},
+                "type": "journal-article",
+            }
+            for doi in self.pages[index]
+        ]
+        return _JsonResponse(
+            {"message": {"items": items, "next-cursor": self.cursor,
+                         "total-results": 11032}}
+        )
+
+
+def test_stable_cursor_keeps_paging_instead_of_stopping_at_page_two():
+    from papers_crawler.providers import _discover_crossref_year, load_journals
+
+    journals = load_journals()
+    by_issn = {i.upper(): j for j in journals for i in j.get("issns", [])}
+    issn = next(iter(by_issn))
+    pages = [[f"10.1/p{p}-{n}" for n in range(4)] for p in range(5)]
+    session = _StableCursorCrossref(pages, issn=issn)
+
+    out = list(
+        _discover_crossref_year(
+            session, by_issn, set(by_issn), year=2026, rows=4, cursor="*"
+        )
+    )
+    # Every page must be walked, not just the first two.
+    assert len(out) == 20, f"stopped early: only {len(out)} works discovered"
+    assert len({m["doi"] for m, _ in out}) == 20
+
+
+def test_wedged_cursor_still_terminates():
+    """A cursor that truly repeats the same page must not loop forever."""
+    from papers_crawler.providers import _discover_crossref_year, load_journals
+
+    journals = load_journals()
+    by_issn = {i.upper(): j for j in journals for i in j.get("issns", [])}
+    issn = next(iter(by_issn))
+    same = [f"10.1/dup{n}" for n in range(4)]
+    session = _StableCursorCrossref([same] * 50, issn=issn)
+
+    out = list(
+        _discover_crossref_year(
+            session, by_issn, set(by_issn), year=2026, rows=4, cursor="*"
+        )
+    )
+    assert len(out) == 4
+    assert session.requests == 2, "should stop as soon as a page adds nothing new"
