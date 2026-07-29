@@ -139,6 +139,7 @@ def discover_crossref(
     cursor: str = "*",
     session: requests.Session | None = None,
     include_multidisciplinary: bool = False,
+    newest_first: bool = True,
 ) -> Iterator[tuple[dict[str, Any], str | None]]:
     """Yield registry-filtered Crossref works and the cursor for resumption.
 
@@ -147,8 +148,14 @@ def discover_crossref(
     walks deep into it, which killed the whole backfill. Per-year result sets are
     ~10k and page reliably.
 
+    Years are walked **newest first** by default. At one paper per minute the
+    crawl budget is the scarce resource, and the oldest years are the least
+    productive: pre-2015 papers are overwhelmingly paywalled and predate
+    machine-readable data-availability statements, so a 2010-first backfill
+    spends weeks before reaching the years that actually deposit expression data.
+
     The yielded cursor is ``"<year>|<crossref-cursor>"`` so a resumed run
-    continues in the right year; a bare cursor is treated as ``start_year``.
+    continues in the right year and keeps walking in the same direction.
     """
     client = session or requests.Session()
     journals = load_journals(include_multidisciplinary=include_multidisciplinary)
@@ -166,8 +173,18 @@ def discover_crossref(
         # of the old multi-year query, and Crossref 500s when it is replayed
         # against a single-year filter. Discard it and restart the year cleanly
         # rather than resuming into a guaranteed failure.
-        first_year, current = start_year, "*"
-    for year in range(max(first_year, start_year), end_year + 1):
+        first_year, current = (end_year if newest_first else start_year), "*"
+    if newest_first:
+        years = [
+            y for y in range(end_year, start_year - 1, -1)
+            if start_year <= y <= min(first_year, end_year)
+        ]
+    else:
+        years = [
+            y for y in range(start_year, end_year + 1)
+            if max(first_year, start_year) <= y <= end_year
+        ]
+    for year in years:
         yield from _discover_crossref_year(
             client, by_issn, wanted, year=year, rows=rows, cursor=current
         )

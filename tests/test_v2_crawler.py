@@ -516,7 +516,8 @@ def test_discovery_is_chunked_one_year_at_a_time():
     from papers_crawler.providers import discover_crossref
 
     s = _YearRecordingSession()
-    list(discover_crossref(start_year=2010, end_year=2014, session=s))
+    list(discover_crossref(start_year=2010, end_year=2014, session=s,
+                           newest_first=False))
 
     assert len(s.filters) == 5, "expected one request per year"
     for offset, flt in enumerate(s.filters):
@@ -554,7 +555,7 @@ def test_yielded_cursor_is_year_tagged_and_resumable():
     # resuming from a tagged cursor starts in that year with the raw cursor
     s2 = _YearRecordingSession()
     list(discover_crossref(start_year=2010, end_year=2013,
-                           cursor="2012|DEEPCUR", session=s2))
+                           cursor="2012|DEEPCUR", session=s2, newest_first=False))
     assert "from-pub-date:2012-01-01" in s2.filters[0]
     assert s2.cursors[0] == "DEEPCUR"
     assert len(s2.filters) == 2  # 2012 then 2013
@@ -570,7 +571,8 @@ def test_legacy_untagged_cursor_is_discarded_not_replayed():
 
     s = _YearRecordingSession()
     list(discover_crossref(start_year=2010, end_year=2011,
-                           cursor="DnF1ZXJ5VGhlbkZldGNoJAAAAAATRnYc", session=s))
+                           cursor="DnF1ZXJ5VGhlbkZldGNoJAAAAAATRnYc", session=s,
+                           newest_first=False))
     assert s.cursors == ["*", "*"], "stale cursor must be dropped, not reused"
     assert "from-pub-date:2010-01-01" in s.filters[0]
 
@@ -580,6 +582,36 @@ def test_malformed_tagged_cursor_falls_back_safely():
 
     for bad in ("notayear|CUR", "2012|", "|CUR", "|"):
         s = _YearRecordingSession()
-        list(discover_crossref(start_year=2019, end_year=2019, cursor=bad, session=s))
+        list(discover_crossref(start_year=2019, end_year=2019, cursor=bad,
+                               session=s, newest_first=False))
         assert s.cursors == ["*"], bad
         assert "from-pub-date:2019-01-01" in s.filters[0]
+
+
+def test_discovery_walks_newest_year_first_by_default():
+    """At 1 paper/minute the budget is scarce; pre-2015 papers are mostly
+    paywalled and predate machine-readable data-availability statements, so a
+    2010-first backfill spends weeks before reaching productive years."""
+    from papers_crawler.providers import discover_crossref
+
+    s = _YearRecordingSession()
+    list(discover_crossref(start_year=2010, end_year=2014, session=s))
+
+    years = [int(f.split("from-pub-date:")[1][:4]) for f in s.filters]
+    assert years == [2014, 2013, 2012, 2011, 2010], years
+    assert s.cursors == ["*"] * 5
+
+
+def test_newest_first_resume_continues_downward():
+    from papers_crawler.providers import discover_crossref
+
+    s = _YearRecordingSession()
+    list(discover_crossref(start_year=2010, end_year=2020,
+                           cursor="2015|DEEPCUR", session=s))
+
+    years = [int(f.split("from-pub-date:")[1][:4]) for f in s.filters]
+    assert years[0] == 2015, "must resume in the tagged year"
+    assert years == sorted(years, reverse=True), "must keep walking downward"
+    assert 2016 not in years, "already-crawled newer years must not repeat"
+    assert s.cursors[0] == "DEEPCUR"
+    assert years[-1] == 2010
