@@ -27,6 +27,15 @@ def _parser() -> argparse.ArgumentParser:
             help="Minimum seconds between starting papers (default: 60).",
         )
         command.add_argument("--run-id", help="Caller-stable run identifier.")
+        command.add_argument(
+            "--include-preprints",
+            action="store_true",
+            help=(
+                "Also crawl bioRxiv/medRxiv via Europe PMC. Open access by "
+                "default and carrying the same deposited accessions, so unlike "
+                "most journal records they do not terminate at license_unknown."
+            ),
+        )
     validate = sub.add_parser("validate")
     validate.add_argument("paths", nargs="+", type=Path)
     return parser
@@ -57,6 +66,7 @@ def main(argv: list[str] | None = None) -> int:
         max_articles=args.max_articles,
         min_interval_seconds=args.paper_interval,
         run_id=args.run_id,
+        include_preprints=args.include_preprints,
     )
     print(json.dumps(sync_corpus(config), indent=2, sort_keys=True))
     return 0

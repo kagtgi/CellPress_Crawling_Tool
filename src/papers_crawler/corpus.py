@@ -17,6 +17,7 @@ from .providers import (
     ProviderAttempt,
     discover_crossref,
     discover_europe_pmc,
+    discover_preprints,
     enrich_europe_pmc,
     fetch_reusable_full_text,
 )
@@ -31,6 +32,11 @@ class CrawlConfig:
     max_articles: int | None = None
     min_interval_seconds: float = 60.0
     run_id: str | None = None
+    # bioRxiv/medRxiv. Off by default so a plain sync keeps its journal-only
+    # meaning; the backfill turns it on, because most journal records terminate at
+    # license_unknown while preprints are open access and carry the same
+    # deposited accessions.
+    include_preprints: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "output_dir", Path(self.output_dir))
@@ -275,6 +281,18 @@ def sync_corpus(
                     ),
                 ),
             )
+            if config.include_preprints:
+                sources = sources + (
+                    (
+                        "preprint_discovery",
+                        discover_preprints(
+                            start_year=config.start_year,
+                            end_year=config.end_year,
+                            page_size=max(config.rows, 100),
+                            cursor=state.cursor("preprint_discovery"),
+                        ),
+                    ),
+                )
         else:
             sources = (("fixture", discovered),)
         seen: set[str] = set()

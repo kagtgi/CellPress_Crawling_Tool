@@ -452,6 +452,114 @@ def discover_europe_pmc(
         current = next_cursor
 
 
+#: Preprint servers worth crawling, as Europe PMC records them. Kept narrow on
+#: purpose: these two are life-science, deposit the same GEO/ArrayExpress
+#: accessions as the journal corpus, and are open-access by default, so the
+#: licence gate passes instead of refusing most of what it sees.
+PREPRINT_SERVERS = ("bioRxiv", "medRxiv")
+
+
+def discover_preprints(
+    *,
+    start_year: int,
+    end_year: int,
+    page_size: int = 1000,
+    cursor: str = "*",
+    session: requests.Session | None = None,
+    servers: tuple[str, ...] = PREPRINT_SERVERS,
+) -> Iterator[tuple[dict[str, Any], str | None]]:
+    """Yield bioRxiv/medRxiv preprint metadata from Europe PMC.
+
+    The journal corpus is bounded by what publishers license: most Cell Press and
+    Nature records terminate at ``license_unknown``, so the crawl spends its budget
+    on papers whose text it may never read. Preprints carry the same deposited
+    accessions, are open-access by default, and are indexed by Europe PMC
+    (``SRC:PPR``) - so they reuse the existing fetch chain and licence gate
+    unchanged, with no new key and no publisher negotiation.
+
+    There is no ISSN registry to filter on here, so scope comes from the server
+    itself. Cursor semantics match `discover_europe_pmc`; the yielded cursor is
+    tagged with the server so a resumed run continues in the same one.
+    """
+    client = session or requests.Session()
+    resume_server, tagged, resume_cursor = (cursor or "*").partition("|")
+    names = list(servers)
+    start = names.index(resume_server) if tagged and resume_server in names else 0
+    inner = resume_cursor if (tagged and resume_server in names and resume_cursor) else "*"
+
+    for server in names[start:]:
+        current = inner
+        inner = "*"
+        seen: set[str] = set()
+        while current:
+            response = _request(
+                client,
+                "https://www.ebi.ac.uk/europepmc/webservices/rest/search",
+                params={
+                    "query": (
+                        f'SRC:PPR AND PUBLISHER:"{server}" AND '
+                        f"FIRST_PDATE:[{start_year}-01-01 TO {end_year}-12-31]"
+                    ),
+                    "format": "json",
+                    "resultType": "core",
+                    "pageSize": min(page_size, 1000),
+                    "cursorMark": current,
+                },
+            )
+            payload = response.json()
+            raw_cursor = payload.get("nextCursorMark")
+            results = payload.get("resultList", {}).get("result", [])
+            fresh = 0
+            for item in results:
+                doi = item.get("doi")
+                if not doi or doi in seen:
+                    continue
+                seen.add(doi)
+                fresh += 1
+                title = item.get("title") or ""
+                if not is_research_article({"title": title}):
+                    continue
+                identifier = item.get("pmcid") or item.get("id")
+                yield (
+                    {
+                        "doi": doi,
+                        "pmcid": item.get("pmcid"),
+                        "pmid": item.get("pmid"),
+                        "publisher_id": None,
+                        "canonical_url": (
+                            f"https://europepmc.org/article/PPR/{identifier}"
+                            if identifier
+                            else f"https://doi.org/{doi}"
+                        ),
+                        "title": title,
+                        "authors": [
+                            {"given": None, "family": None, "literal": name}
+                            for name in item.get("authorString", "").split(", ")
+                            if name
+                        ],
+                        "journal": server,
+                        "publisher_family": "preprint",
+                        "issns": [],
+                        "published": item.get("firstPublicationDate"),
+                        "article_type": "preprint",
+                        "language": "en",
+                        # Left unset deliberately: the licence gate resolves it
+                        # per record rather than assuming preprints are reusable.
+                        "license_url": None,
+                        "tdm_links": [],
+                        "is_open_access": str(item.get("isOpenAccess", "")).upper()
+                        == "Y",
+                    },
+                    f"{server}|{raw_cursor}" if raw_cursor else None,
+                )
+            # Same rule as Crossref: judge progress by the response, not the
+            # cursor, so a stable-but-advancing cursor keeps paging and a wedged
+            # one still terminates.
+            if not results or not raw_cursor or not fresh:
+                break
+            current = raw_cursor
+
+
 def enrich_europe_pmc(
     metadata: dict[str, Any],
     *,

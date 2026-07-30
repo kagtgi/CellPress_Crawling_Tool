@@ -917,3 +917,135 @@ def test_declared_sec_type_wins_over_an_unhelpful_title():
     )
     assert len(doc["content"]["data_availability"]) == 1
     assert "GSE123456" in doc["content"]["data_availability"][0]["text"]
+
+
+class _PreprintSearch:
+    """Europe PMC preprint search: one page per server, then exhausted."""
+
+    def __init__(self, per_server=2):
+        self.per_server = per_server
+        self.queries: list[str] = []
+        self.cursors: list[str] = []
+
+    def get(self, url, params=None, timeout=None, headers=None):
+        query = params["query"]
+        self.queries.append(query)
+        self.cursors.append(params["cursorMark"])
+        server = query.split('PUBLISHER:"')[1].split('"')[0]
+        results = [
+            {
+                "doi": f"10.1101/2026.01.{index:02d}.{server[:3].lower()}",
+                "pmcid": None,
+                "id": f"PPR{index}{server[:1]}",
+                "pmid": None,
+                "title": f"Single-cell atlas {index} from {server}",
+                "authorString": "Doe J, Roe R",
+                "firstPublicationDate": "2026-01-15",
+                "isOpenAccess": "Y",
+            }
+            for index in range(self.per_server)
+        ]
+        return _JsonResponse(
+            {"resultList": {"result": results}, "nextCursorMark": "NEXT"}
+        )
+
+
+def test_preprint_discovery_covers_both_servers_and_tags_its_cursor():
+    """bioRxiv/medRxiv reuse the existing fetch chain, no new key.
+
+    Most journal records terminate at license_unknown, so the crawl budget buys
+    metadata it can never read. Preprints are open access by default and carry the
+    same deposited GEO accessions.
+    """
+    from papers_crawler.providers import PREPRINT_SERVERS, discover_preprints
+
+    session = _PreprintSearch()
+    out = list(
+        discover_preprints(start_year=2024, end_year=2026, session=session)
+    )
+
+    assert PREPRINT_SERVERS == ("bioRxiv", "medRxiv")
+    assert len(out) == 4, "both servers must be walked"
+    assert all('SRC:PPR' in q for q in session.queries)
+    assert {q.split('PUBLISHER:"')[1].split('"')[0] for q in session.queries} == set(
+        PREPRINT_SERVERS
+    )
+    assert all("FIRST_PDATE:[2024-01-01 TO 2026-12-31]" in q for q in session.queries)
+
+    metadata, cursor = out[0]
+    assert metadata["publisher_family"] == "preprint"
+    assert metadata["journal"] in PREPRINT_SERVERS
+    assert metadata["article_type"] == "preprint"
+    # the licence is resolved per record, never assumed from "it is a preprint"
+    assert metadata["license_url"] is None
+    assert cursor.startswith("bioRxiv|"), cursor
+
+    # resuming re-enters the tagged server and skips the one before it
+    resumed = _PreprintSearch()
+    list(
+        discover_preprints(
+            start_year=2024, end_year=2026, cursor="medRxiv|DEEP", session=resumed
+        )
+    )
+    assert resumed.cursors[0] == "DEEP"
+    assert all("medRxiv" in q for q in resumed.queries), "must not re-walk bioRxiv"
+
+
+def test_preprint_discovery_terminates_on_a_repeated_page():
+    """Same rule as Crossref: judge progress by the response, not the cursor."""
+    from papers_crawler.providers import discover_preprints
+
+    class _Wedged(_PreprintSearch):
+        def get(self, url, params=None, timeout=None, headers=None):
+            self.queries.append(params["query"])
+            self.cursors.append(params["cursorMark"])
+            return _JsonResponse(
+                {
+                    "resultList": {
+                        "result": [
+                            {
+                                "doi": "10.1101/same",
+                                "id": "PPR1",
+                                "title": "Atlas",
+                                "authorString": "Doe J",
+                                "firstPublicationDate": "2026-01-15",
+                            }
+                        ]
+                    },
+                    "nextCursorMark": "STUCK",
+                }
+            )
+
+    session = _Wedged()
+    out = list(
+        discover_preprints(
+            start_year=2026, end_year=2026, session=session, servers=("bioRxiv",)
+        )
+    )
+    assert len(out) == 1
+    assert len(session.queries) == 2, "stop once a page adds nothing new"
+
+
+def test_preprints_are_off_unless_asked_for(tmp_path):
+    """A plain sync must keep its journal-only meaning."""
+    from papers_crawler.corpus import CrawlConfig
+
+    assert CrawlConfig(tmp_path).include_preprints is False
+    assert CrawlConfig(tmp_path, include_preprints=True).include_preprints is True
+
+
+def test_preprint_publisher_family_passes_the_schema():
+    """`preprint` must be a valid publisher_family or every record is discarded.
+
+    This is the same drift that silently threw away eLife, PLOS, EMBO, Genome
+    Biology, Genome Research, NAR and J Exp Med after fetching them successfully.
+    """
+    from papers_crawler.article import validate_article_document
+    from papers_crawler.normalize import metadata_to_article
+
+    document = metadata_to_article(
+        {**META, "publisher_family": "preprint", "journal": "bioRxiv"},
+        provider="europe_pmc",
+        status="license_unknown",
+    )
+    validate_article_document(document)
